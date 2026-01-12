@@ -265,7 +265,8 @@ public class ClientApp extends Application {
 
             try {
                 conn.requestThread(activePeer);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                e.printStackTrace();
             }
         });
 
