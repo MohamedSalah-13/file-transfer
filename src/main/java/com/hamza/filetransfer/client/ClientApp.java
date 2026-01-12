@@ -5,7 +5,6 @@ import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
-import javafx.collections.transformation.SortedList;
 import javafx.geometry.Insets;
 import javafx.geometry.NodeOrientation;
 import javafx.geometry.Pos;
@@ -30,14 +29,29 @@ public class ClientApp extends Application {
     private final Map<String, UserItem> userIndex = new HashMap<>();
     private final ObservableList<ChatMessage> chatMessages = FXCollections.observableArrayList();
     private final ObservableList<SimpleTransferRow> transfers = FXCollections.observableArrayList();
+    // Keep one comparator definition so sorting is consistent everywhere.
+    private final Comparator<UserItem> USER_COMPARATOR = (a, b) -> {
+        int unread = Integer.compare(b.unreadCountProperty().get(), a.unreadCountProperty().get());
+        if (unread != 0) return unread;
+
+        int activity = Long.compare(b.lastActivityMillisProperty().get(), a.lastActivityMillisProperty().get());
+        if (activity != 0) return activity;
+
+        return a.getUsername().compareToIgnoreCase(b.getUsername());
+    };
     private ResourceBundle bundle;
     private ClientConnection conn;
     private String activePeer;
     private ListView<ChatMessage> chatListRef;
 
+    private void resortUsers() {
+        // Sort in-place. This does NOT temporarily clear the list, so it won't break selection.
+        FXCollections.sort(userItems, USER_COMPARATOR);
+    }
+
     @Override
     public void start(Stage stage) {
-//        ThemeManager.applyLight();
+        // ThemeManager.applyLight();
         setLanguage("en"); // Default language
         ThemeManager.applyTheme(ThemeManager.getThemes().getFirst());
 
@@ -47,7 +61,7 @@ public class ClientApp extends Application {
         Button btnConnect = new Button("Connect");
 
         Label lblStatus = new Label("Not connected");
-//        lblStatus.textProperty().bind(createStringBinding("status_not_connected"));
+        // lblStatus.textProperty().bind(createStringBinding("status_not_connected"));
 
         // Language Picker
         ComboBox<String> langPicker = new ComboBox<>(FXCollections.observableArrayList("English", "العربية"));
@@ -86,7 +100,7 @@ public class ClientApp extends Application {
 
         // ===== Left sidebar =====
         TextField tfSearchUsers = new TextField();
-//        tfSearchUsers.setPromptText("Search users...");
+        // tfSearchUsers.setPromptText("Search users...");
         tfSearchUsers.promptTextProperty().bind(createStringBinding("search_prompt"));
 
         FilteredList<UserItem> filteredUsers = new FilteredList<>(userItems, u -> true);
@@ -95,19 +109,9 @@ public class ClientApp extends Application {
             filteredUsers.setPredicate(u -> query.isEmpty() || u.getUsername().toLowerCase().contains(query));
         });
 
-        // NEW: sort = unread desc, lastActivity desc, username
-        SortedList<UserItem> sortedUsers = new SortedList<>(filteredUsers);
-        sortedUsers.setComparator((a, b) -> {
-            int unread = Integer.compare(b.unreadCountProperty().get(), a.unreadCountProperty().get());
-            if (unread != 0) return unread;
-
-            int activity = Long.compare(b.lastActivityMillisProperty().get(), a.lastActivityMillisProperty().get());
-            if (activity != 0) return activity;
-
-            return a.getUsername().compareToIgnoreCase(b.getUsername());
-        });
-
-        ListView<UserItem> usersView = new ListView<>(sortedUsers);
+        // IMPORTANT CHANGE:
+        // Instead of SortedList + "setAll" hack, we keep a FilteredList and sort userItems in-place using resortUsers().
+        ListView<UserItem> usersView = new ListView<>(filteredUsers);
         usersView.setPrefWidth(300);
         usersView.setCellFactory(lv -> new UserCell());
 
@@ -260,8 +264,10 @@ public class ClientApp extends Application {
             activePeer = selected.getUsername();
             selected.clearUnread();
 
-            // Force list refresh sorting after unread cleared
-            userItems.setAll(userItems);
+            // IMPORTANT CHANGE:
+            // Don't do userItems.setAll(userItems); it temporarily clears the list and breaks selection.
+            // Just resort safely (in-place).
+            resortUsers();
 
             try {
                 conn.requestThread(activePeer);
@@ -281,12 +287,15 @@ public class ClientApp extends Application {
                 conn.setOnThreadMessages(msgs -> {
                     chatMessages.setAll(msgs);
                     updateLastPreviewFromThread(activePeer, msgs);
-                    userItems.setAll(userItems); // re-sort after activity change
+
+                    // Activity changed -> resort (no clearing).
+                    resortUsers();
                 });
 
                 conn.setOnIncomingText(evt -> {
                     long ms = FileTypeUtil.parseIsoMillis(evt.timestamp());
                     bumpUnreadAndPreview(evt.fromUser(), "[MSG] Message", ms);
+
                     if (activePeer != null && activePeer.equals(evt.fromUser())) {
                         clearUnread(activePeer);
                         try {
@@ -294,14 +303,17 @@ public class ClientApp extends Application {
                         } catch (Exception ignored) {
                         }
                     }
-                    userItems.setAll(userItems);
+
+                    resortUsers();
                 });
 
                 conn.setOnIncoming(fileEvt -> {
                     String from = fileEvt.fromUserProperty().get();
                     String fileName = fileEvt.fileNameProperty().get();
                     long ms = FileTypeUtil.parseIsoMillis(fileEvt.timestampProperty().get());
+
                     bumpUnreadAndPreview(from, FileTypeUtil.previewPrefixForFile(fileName) + fileName, ms);
+
                     if (activePeer != null && activePeer.equals(from)) {
                         clearUnread(activePeer);
                         try {
@@ -309,7 +321,8 @@ public class ClientApp extends Application {
                         } catch (Exception ignored) {
                         }
                     }
-                    userItems.setAll(userItems);
+
+                    resortUsers();
                 });
                 // ---------------------------------
                 conn.requestUsers();
@@ -388,8 +401,8 @@ public class ClientApp extends Application {
         userItems.removeIf(item -> !usernameSet.contains(item.getUsername()));
         userIndex.keySet().retainAll(usernameSet);
 
-        // Trigger a sort/refresh update for the UI
-        userItems.setAll(new ArrayList<>(userItems));
+        // After add/remove, sort once.
+        resortUsers();
     }
 
     private void bumpUnreadAndPreview(String fromUser, String preview, long activityMillis) {
