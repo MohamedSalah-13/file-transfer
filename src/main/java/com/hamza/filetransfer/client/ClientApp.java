@@ -84,6 +84,8 @@ public class ClientApp extends Application {
             }
         });
 
+        Button btnToggleRight = new Button("Hide Transfers");
+
         HBox top = new HBox(
                 10,
                 new Label(bundle.getString("host")), tfHost,
@@ -92,7 +94,8 @@ public class ClientApp extends Application {
                 btnConnect, lblStatus,
                 new Region(),
                 new Label("Lang:"), langPicker,
-                new Label("Theme:"), themePicker
+                new Label("Theme:"), themePicker,
+                btnToggleRight
         );
         HBox.setHgrow(top.getChildren().get(7), Priority.ALWAYS); // Region spacer
         top.setAlignment(Pos.CENTER_LEFT);
@@ -151,7 +154,7 @@ public class ClientApp extends Application {
         TextField tfMessage = new TextField();
         tfMessage.setPromptText("Type a message...");
 
-        Button btnSendText = new Button("Send Text");
+        Button btnSendText = new Button("✅ Send Text");
 
         btnSendText.setOnAction(a -> {
             if (conn == null || activePeer == null) return;
@@ -175,9 +178,9 @@ public class ClientApp extends Application {
             t.start();
         });
 
-        Button btnChoose = new Button("Attach");
-        Label lblChosen = new Label("No file");
-        Button btnSend = new Button("Send");
+        Button btnChoose = new Button("📎 Attach File");
+        Label lblChosen = new Label(" No file");
+        Button btnSend = new Button("✉ Send File");
 
         final Path[] chosen = new Path[1];
         btnChoose.setOnAction(a -> {
@@ -220,8 +223,12 @@ public class ClientApp extends Application {
             t.start();
         });
 
-        HBox composer = new HBox(10, btnChoose, lblChosen, tfMessage, btnSendText, btnSend);
+        FlowPane composer = new FlowPane(tfMessage, btnSendText, btnChoose, lblChosen, btnSend);
         HBox.setHgrow(tfMessage, Priority.ALWAYS);
+        composer.setAlignment(Pos.CENTER_LEFT);
+        composer.setHgap(10);
+        composer.setVgap(5);
+        composer.setPadding(new Insets(5, 10, 5, 10));
         composer.getStyleClass().add("composer");
 
         // Transfers table (كما هو عندك سابقاً) — أبقيه كما هو
@@ -240,10 +247,24 @@ public class ClientApp extends Application {
 
         transfersTable.getColumns().addAll(tName, tProg, tStatus);
 
-        VBox right = new VBox(10, new Label("Transfers"), transfersTable, new Separator(), new Label("Send"), composer);
+        VBox right = new VBox(10, new Label("Transfers"), transfersTable);
         right.getStyleClass().add("card");
         right.setPrefWidth(420);
 
+
+        btnToggleRight.setOnAction(e -> {
+            if (right.isVisible()) {
+                right.setVisible(false);
+                right.setManaged(false);
+                btnToggleRight.setText("Show Transfers");
+            } else {
+                right.setVisible(true);
+                right.setManaged(true);
+                btnToggleRight.setText("Hide Transfers");
+            }
+        });
+
+        center.getChildren().addAll(new Label("Send"), composer);
         // ===== Layout =====
         BorderPane root = new BorderPane();
         root.setTop(top);
@@ -256,6 +277,8 @@ public class ClientApp extends Application {
         content.setRight(right);
         BorderPane.setMargin(content, new Insets(12));
         root.setCenter(content);
+        
+        
 
         // when selecting user => load thread
         usersView.getSelectionModel().selectedItemProperty().addListener((obs, old, selected) -> {
