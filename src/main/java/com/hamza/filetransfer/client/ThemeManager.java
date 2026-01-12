@@ -1,30 +1,33 @@
 package com.hamza.filetransfer.client;
 
-import atlantafx.base.theme.PrimerDark;
-import atlantafx.base.theme.PrimerLight;
+import atlantafx.base.theme.*;
 import javafx.application.Application;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
 
-public final class ThemeManager {
-    private static boolean dark = false;
+public class ThemeManager {
 
-    private ThemeManager() {}
-
-    public static void applyLight() {
-        dark = false;
-        Application.setUserAgentStylesheet(new PrimerLight().getUserAgentStylesheet());
+    public record ThemeOption(String name, Theme theme) {
+        @Override public String toString() { return name; }
     }
 
-    public static void applyDark() {
-        dark = true;
-        Application.setUserAgentStylesheet(new PrimerDark().getUserAgentStylesheet());
+    private static final ObservableList<ThemeOption> THEMES = FXCollections.observableArrayList(
+            new ThemeOption("Primer Light", new PrimerLight()),
+            new ThemeOption("Primer Dark", new PrimerDark()),
+            new ThemeOption("Nord Light", new NordLight()),
+            new ThemeOption("Nord Dark", new NordDark()),
+            new ThemeOption("Cupertino Light", new CupertinoLight()),
+            new ThemeOption("Cupertino Dark", new CupertinoDark()),
+            new ThemeOption("Dracula", new Dracula())
+    );
+
+    public static ObservableList<ThemeOption> getThemes() {
+        return THEMES;
     }
 
-    public static boolean isDark() {
-        return dark;
-    }
-
-    public static void toggle() {
-        if (dark) applyLight();
-        else applyDark();
+    public static void applyTheme(ThemeOption option) {
+        if (option != null && option.theme() != null) {
+            Application.setUserAgentStylesheet(option.theme().getUserAgentStylesheet());
+        }
     }
 }

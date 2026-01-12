@@ -2,15 +2,17 @@ package com.hamza.filetransfer.client;
 
 import javafx.application.Application;
 import javafx.application.Platform;
-import javafx.collections.*;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
 import javafx.collections.transformation.SortedList;
 import javafx.geometry.Insets;
+import javafx.geometry.NodeOrientation;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
+import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
-import javafx.scene.control.cell.ProgressBarTableCell;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
@@ -19,23 +21,25 @@ import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class ClientApp extends Application {
 
+    private final Map<String, Label> translatableLabels = new HashMap<>(); // To track labels for re-translation
     private final ObservableList<UserItem> userItems = FXCollections.observableArrayList();
     private final Map<String, UserItem> userIndex = new HashMap<>();
     private final ObservableList<ChatMessage> chatMessages = FXCollections.observableArrayList();
     private final ObservableList<SimpleTransferRow> transfers = FXCollections.observableArrayList();
+    private ResourceBundle bundle;
     private ClientConnection conn;
     private String activePeer;
     private ListView<ChatMessage> chatListRef;
-    
+
     @Override
     public void start(Stage stage) {
-        ThemeManager.applyLight();
+//        ThemeManager.applyLight();
+        setLanguage("en"); // Default language
+        ThemeManager.applyTheme(ThemeManager.getThemes().getFirst());
 
         TextField tfHost = new TextField("127.0.0.1");
         TextField tfPort = new TextField("5000");
@@ -43,23 +47,38 @@ public class ClientApp extends Application {
         Button btnConnect = new Button("Connect");
 
         Label lblStatus = new Label("Not connected");
+//        lblStatus.textProperty().bind(createStringBinding("status_not_connected"));
 
-        ToggleButton themeToggle = new ToggleButton("Dark");
-        themeToggle.setOnAction(e -> {
-            ThemeManager.toggle();
-            themeToggle.setSelected(ThemeManager.isDark());
-            themeToggle.setText(ThemeManager.isDark() ? "Light" : "Dark");
+        // Language Picker
+        ComboBox<String> langPicker = new ComboBox<>(FXCollections.observableArrayList("English", "العربية"));
+        langPicker.getSelectionModel().selectFirst();
+        langPicker.setOnAction(e -> {
+            String selected = langPicker.getValue();
+            setLanguage(selected.equals("العربية") ? "ar" : "en");
+            updateOrientation(stage.getScene().getRoot());
+        });
+
+        // Theme Picker
+        ComboBox<ThemeManager.ThemeOption> themePicker = new ComboBox<>(ThemeManager.getThemes());
+        themePicker.getSelectionModel().selectFirst();
+        themePicker.setOnAction(e -> {
+            ThemeManager.applyTheme(themePicker.getValue());
+            // Re-apply custom app styles to ensure they override theme defaults if necessary
+            String css = getClass().getResource("/styles/app.css").toExternalForm();
+            if (stage.getScene() != null && !stage.getScene().getStylesheets().contains(css)) {
+                stage.getScene().getStylesheets().add(css);
+            }
         });
 
         HBox top = new HBox(
                 10,
-                new Label("Host:"), tfHost,
-                new Label("Port:"), tfPort,
-                new Label("User:"), tfUser,
-                btnConnect,
+                new Label(bundle.getString("host")), tfHost,
+                new Label(bundle.getString("port")), tfPort,
+                new Label(bundle.getString("user")), tfUser,
+                btnConnect, lblStatus,
                 new Region(),
-                themeToggle,
-                lblStatus
+                new Label("Lang:"), langPicker,
+                new Label("Theme:"), themePicker
         );
         HBox.setHgrow(top.getChildren().get(7), Priority.ALWAYS); // Region spacer
         top.setAlignment(Pos.CENTER_LEFT);
@@ -67,7 +86,8 @@ public class ClientApp extends Application {
 
         // ===== Left sidebar =====
         TextField tfSearchUsers = new TextField();
-        tfSearchUsers.setPromptText("Search users...");
+//        tfSearchUsers.setPromptText("Search users...");
+        tfSearchUsers.promptTextProperty().bind(createStringBinding("search_prompt"));
 
         FilteredList<UserItem> filteredUsers = new FilteredList<>(userItems, u -> true);
         tfSearchUsers.textProperty().addListener((obs, old, q) -> {
@@ -92,8 +112,9 @@ public class ClientApp extends Application {
         usersView.setCellFactory(lv -> new UserCell());
 
         Button btnRefreshUsers = new Button("Refresh");
+        btnRefreshUsers.textProperty().bind(createStringBinding("refresh"));
 
-        VBox left = new VBox(10, new Label("Online"), tfSearchUsers, usersView, btnRefreshUsers);
+        VBox left = new VBox(10, new Label(bundle.getString("online_header")), tfSearchUsers, usersView, btnRefreshUsers);
         left.getStyleClass().add("sidebar");
 
         // ===== Center chat surface =====
@@ -351,19 +372,23 @@ public class ClientApp extends Application {
     }
 
     private void applyUsers(List<String> usernames) {
-        for (String u : usernames) {
-            userIndex.computeIfAbsent(u, key -> {
-                UserItem item = new UserItem(key);
+        Set<String> usernameSet = new HashSet<>(usernames);
+
+        // Add new users that don't exist yet
+        for (String username : usernames) {
+            userIndex.computeIfAbsent(username, name -> {
+                UserItem item = new UserItem(name);
                 userItems.add(item);
                 return item;
             });
         }
 
-        userItems.removeIf(item -> !usernames.contains(item.getUsername()));
-        userIndex.keySet().retainAll(usernames);
+        // Remove users no longer present in the source list
+        userItems.removeIf(item -> !usernameSet.contains(item.getUsername()));
+        userIndex.keySet().retainAll(usernameSet);
 
-        // trigger sort update
-        userItems.setAll(userItems);
+        // Trigger a sort/refresh update for the UI
+        userItems.setAll(new ArrayList<>(userItems));
     }
 
     private void bumpUnreadAndPreview(String fromUser, String preview, long activityMillis) {
@@ -406,6 +431,25 @@ public class ClientApp extends Application {
         long ms = FileTypeUtil.parseIsoMillis(last.timestampProperty().get());
         item.setLastPreview(preview);
         item.updateLastActivity(ms, FileTypeUtil.formatTime(ms));
+    }
+
+    private void setLanguage(String lang) {
+        Locale locale = new Locale(lang);
+        bundle = ResourceBundle.getBundle("messages", locale);
+        // In a full implementation, you'd use StringBindings to update all UI elements automatically
+    }
+
+    private void updateOrientation(Parent root) {
+        if (bundle.getLocale().getLanguage().equals("ar")) {
+            root.setNodeOrientation(NodeOrientation.RIGHT_TO_LEFT);
+        } else {
+            root.setNodeOrientation(NodeOrientation.LEFT_TO_RIGHT);
+        }
+    }
+
+    // Helper to create dynamic bindings for translations
+    private javafx.beans.binding.StringBinding createStringBinding(String key) {
+        return javafx.beans.binding.Bindings.createStringBinding(() -> bundle.getString(key));
     }
 
     private static final class UserCell extends ListCell<UserItem> {
@@ -452,6 +496,27 @@ public class ClientApp extends Application {
     }
 
     private static final class ChatBubbleCell extends ListCell<ChatMessage> {
+        private static Node fileBadgeFor(String fileName) {
+            Label b = new Label(switch (FileTypeUtil.kindOf(fileName)) {
+                case IMAGE -> "IMG";
+                case ARCHIVE -> "BOOK";
+                case OTHER -> "FILE";
+            });
+            b.getStyleClass().add("file-badge");
+            return b;
+        }
+
+        private static String humanSize(long bytes) {
+            double b = bytes;
+            String[] units = {"B", "KB", "MB", "GB"};
+            int i = 0;
+            while (b >= 1024 && i < units.length - 1) {
+                b /= 1024;
+                i++;
+            }
+            return String.format("%.1f %s", b, units[i]);
+        }
+
         @Override
         protected void updateItem(ChatMessage item, boolean empty) {
             super.updateItem(item, empty);
@@ -524,27 +589,6 @@ public class ClientApp extends Application {
             row.setAlignment(out ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
 
             setGraphic(row);
-        }
-
-        private static Node fileBadgeFor(String fileName) {
-            Label b = new Label(switch (FileTypeUtil.kindOf(fileName)) {
-                case IMAGE -> "IMG";
-                case ARCHIVE -> "BOOK";
-                case OTHER -> "FILE";
-            });
-            b.getStyleClass().add("file-badge");
-            return b;
-        }
-
-        private static String humanSize(long bytes) {
-            double b = bytes;
-            String[] units = {"B", "KB", "MB", "GB"};
-            int i = 0;
-            while (b >= 1024 && i < units.length - 1) {
-                b /= 1024;
-                i++;
-            }
-            return String.format("%.1f %s", b, units[i]);
         }
     }
 }
