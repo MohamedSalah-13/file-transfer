@@ -56,5 +56,5 @@ users/<user>/threads/<peer>/<messageId>.meta  # chat history, one Properties fil
 ### Known issues
 - `TransferSession` JavaFX properties are updated from server socket threads, not the FX thread.
 - Uploads run on the CONTROL socket while holding the write lock, which blocks chat and notifications for that user until the upload finishes.
-- `messages_ar.properties` is corrupted (Arabic text saved as literal `?`). Most UI strings are hard-coded English anyway; only a few use the `ResourceBundle`.
+- `messages*.properties` must stay UTF-8: Java 9+ reads resource bundles as UTF-8. The Arabic file was once saved with a non-UTF-8 encoding, which turned every character into `?`. Only a few UI strings use the `ResourceBundle`; most are hard-coded English in `ClientApp`.
 - The port (5000) and storage path are hard-coded in `ServerApp`; client defaults are in `ClientApp`.
