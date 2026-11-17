@@ -9,6 +9,7 @@ import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.control.cell.ProgressBarTableCell;
+import javafx.scene.image.Image;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -20,7 +21,6 @@ import com.hamza.filetransfer.shared.Discovery;
 
 import java.net.BindException;
 import java.net.InetAddress;
-import java.nio.file.Path;
 import java.util.List;
 
 public class ServerApp extends Application {
@@ -82,6 +82,10 @@ public class ServerApp extends Application {
         scene.getStylesheets().add(getClass().getResource("/styles/app.css").toExternalForm());
 
         stage.setTitle("File Transfer - Server");
+        // The client icon with a server badge (drawn by packaging/IconMaker.java).
+        for (int size : new int[]{16, 24, 32, 48, 64, 128, 256}) {
+            stage.getIcons().add(new Image(getClass().getResource("/icons/server-" + size + ".png").toExternalForm()));
+        }
         stage.setScene(scene);
         stage.show();
 

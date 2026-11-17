@@ -392,6 +392,10 @@ public class ClientApp extends Application {
         DayClock.start();
 
         stage.titleProperty().bind(I18n.bind("app_title"));
+        // Title bar and taskbar icon instead of Java's (drawn by packaging/IconMaker.java).
+        for (int size : new int[]{16, 24, 32, 48, 64, 128, 256}) {
+            stage.getIcons().add(new Image(getClass().getResource("/icons/client-" + size + ".png").toExternalForm()));
+        }
         stage.setScene(scene);
         stage.show();
         // A returning user only needs the password. On a first start keep the field unfocused,

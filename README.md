@@ -72,7 +72,7 @@ storage=D:/ft-data
 .\packaging\package.ps1 -Type app-image  # مجلد يتضغط ويشتغل من غير تثبيت
 ```
 
-ملف التثبيت فيه Java الخاصة بيه ومش محتاج صلاحيات مدير. بيضيف اختصارين في قائمة Start: **File Transfer** (العميل) و **File Transfer Server**. السيرفر المثبّت بيحفظ بياناته و `server.properties` في `%USERPROFILE%\.file-transfer\server`، فإلغاء التثبيت أو الترقية ما بيمسحش الحسابات ولا الملفات ولا الشهادة. بناؤه محتاج JDK 17 أو أحدث (عشان `jpackage`)، و [WiX Toolset](https://wixtoolset.org/) 3.x لملف الـ `.exe`.
+ملف التثبيت فيه Java الخاصة بيه ومش محتاج صلاحيات مدير. بيضيف اختصارين في قائمة Start: **File Transfer** (العميل) و **File Transfer Server**. السيرفر المثبّت بيحفظ بياناته و `server.properties` في `%USERPROFILE%\.file-transfer\server`، فإلغاء التثبيت أو الترقية ما بيمسحش الحسابات ولا الملفات ولا الشهادة. أيقونة البرنامج (فقاعة محادثة فيها سهم إرسال وسهم استقبال، والسيرفر عليه علامة سيرفر صغيرة) مرسومة بالكود في `packaging/IconMaker.java`: لو غيّرتها شغّل `java packaging/IconMaker.java`. بناء ملف التثبيت محتاج JDK 17 أو أحدث (عشان `jpackage`)، و [WiX Toolset](https://wixtoolset.org/) 3.x لملف الـ `.exe`.
 
 ## الاختبارات
 

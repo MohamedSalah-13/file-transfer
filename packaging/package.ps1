@@ -52,6 +52,7 @@ $jpArgs = @(
     '--description', 'LAN file transfer and chat',
     '--runtime-image', 'target\app',
     '--module', 'com.hamza.filetransfer/com.hamza.filetransfer.client.ClientLauncher',
+    '--icon', 'packaging\client.ico',
     '--add-launcher', 'File Transfer Server=packaging\server-launcher.properties',
     '--dest', $dest
 )

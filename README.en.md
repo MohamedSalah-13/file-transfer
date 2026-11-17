@@ -72,7 +72,7 @@ To give the app to people who don't have Java:
 .\packaging\package.ps1 -Type app-image  # a folder to zip and run without installing
 ```
 
-The installer has its own Java runtime and needs no admin rights. It adds two Start menu shortcuts: **File Transfer** (the client) and **File Transfer Server**. The installed server keeps its data and `server.properties` in `%USERPROFILE%\.file-transfer\server`, so uninstalling or upgrading keeps the accounts, files and certificate. Building it needs JDK 17+ (for `jpackage`) and, for the `.exe`, the [WiX Toolset](https://wixtoolset.org/) 3.x.
+The installer has its own Java runtime and needs no admin rights. It adds two Start menu shortcuts: **File Transfer** (the client) and **File Transfer Server**. The installed server keeps its data and `server.properties` in `%USERPROFILE%\.file-transfer\server`, so uninstalling or upgrading keeps the accounts, files and certificate. The app icon (a chat bubble with send and receive arrows; the server's adds a server badge) is drawn by `packaging/IconMaker.java`: run `java packaging/IconMaker.java` after changing it. Building the installer needs JDK 17+ (for `jpackage`) and, for the `.exe`, the [WiX Toolset](https://wixtoolset.org/) 3.x.
 
 ## Tests
 

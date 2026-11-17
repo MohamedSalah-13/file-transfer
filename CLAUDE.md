@@ -21,6 +21,7 @@ Windows (PowerShell); use `./mvnw` on Unix shells.
 ```
 
 - `packaging/package.ps1`: `javafx:jlink` makes the runtime image in `target/app` (it keeps `bin/keytool.exe`, which jpackage's own jlink step would strip), then `jpackage --runtime-image` makes the installer. The main launcher "File Transfer" is the client; `packaging/server-launcher.properties` adds "File Transfer Server" with `-Dfiletransfer.packaged=true`, which makes `ServerConfig.workDir()` use `~/.file-transfer/server` instead of the (unwritable, replaced on upgrade) install folder. Keep `--win-upgrade-uuid` unchanged so new versions upgrade in place.
+- Icons: `packaging/IconMaker.java` draws them in code (a chat bubble with send/receive arrows; the server's adds a server badge). After changing it, run `java packaging/IconMaker.java` from the project root: it rewrites `packaging/client.ico`, `packaging/server.ico` (used by `package.ps1`) and `src/main/resources/icons/(client|server)-N.png` (the window icons set in `ClientApp` / `ServerApp`; dialogs inherit them from their owner).
 
 - The `server` / `client` Maven profiles only switch `mainClass` (`server.ServerLauncher` / `client.ClientLauncher`). Without a profile `javafx:run` starts the server.
 - Tests (JUnit 5, Surefire 3.x) live in `src/test/java` in the same packages as the code, so Surefire patches them into the JPMS module and they can use package-private members.
