@@ -42,6 +42,23 @@ A JavaFX app for sending files and chatting between computers on a local network
 
 On Linux or macOS use `./mvnw` instead of `.\mvnw.cmd`.
 
+### Another port or storage folder
+
+If port 5000 is taken, or you want the data somewhere else:
+
+```powershell
+.\mvnw.cmd -Pserver javafx:run "-Djavafx.args=--port 5050 --storage D:\ft-data"
+```
+
+Or set them once in a `server.properties` file in the working directory:
+
+```properties
+port=5050
+storage=D:/ft-data
+```
+
+Command-line options win over the file, and the file wins over the defaults (`5000` and `server-storage`). The server window shows the port and folder it actually uses, and says clearly when the port is already in use. In the client, enter the same port in the `Port` field.
+
 Full details (client fields, accounts, network and firewall settings) are in [docs/RUNNING.md](docs/RUNNING.md) (Arabic).
 
 ## Tests
@@ -84,7 +101,7 @@ Errors are sent as `ERROR <code> <argCount> <args...>`. The codes are defined in
 
 ### Server storage
 
-There is no database. Everything is saved in a `server-storage/` folder inside the working directory:
+There is no database. Everything is saved in a `server-storage/` folder inside the working directory (or the folder given with `--storage`):
 
 ```
 server-storage/
@@ -104,7 +121,6 @@ server-storage/
 
 ## Known limitations
 
-- The port (`5000`) and the storage folder are hard-coded.
 - The server and the clients must use the same protocol version. If they don't, the server refuses the login with a clear message asking to install the same version on both. Since 2.0.0 the connection is encrypted, so it does not work with 1.x servers or clients.
 - Deleting `server-storage/tls` creates a new certificate. Every client then blocks the connection and shows the old and new fingerprints. Its "Trust the new certificate" button only works after the user confirms they compared the new fingerprint with the server window.
 

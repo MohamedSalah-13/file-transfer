@@ -16,7 +16,9 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
+import java.net.BindException;
 import java.nio.file.Path;
+import java.util.List;
 
 public class ServerApp extends Application {
 
@@ -80,14 +82,17 @@ public class ServerApp extends Application {
         stage.show();
 
         // Creating the certificate on first start runs keytool (about a second): keep it off the FX thread.
+        List<String> args = getParameters() == null ? List.of() : getParameters().getRaw(); // null if not started by launch()
         Thread starter = new Thread(() -> {
+            ServerConfig config = null;
             try {
-                AccountStore accounts = new AccountStore(Path.of("server-storage", "accounts.properties"));
-                ServerTls tls = ServerTls.loadOrCreate(Path.of("server-storage", "tls"));
+                config = ServerConfig.load(args, Path.of("").toAbsolutePath());
+                AccountStore accounts = new AccountStore(config.accountsFile());
+                ServerTls tls = ServerTls.loadOrCreate(config.tlsDir());
 
                 new FileTransferServer(
-                        5000,
-                        Path.of("server-storage", "users"),
+                        config.port(),
+                        config.usersDir(),
                         accounts,
                         tls.context(),
                         session -> {
@@ -97,15 +102,27 @@ public class ServerApp extends Application {
                         }
                 ).startAsync();
 
+                ServerConfig running = config;
                 Platform.runLater(() -> {
-                    info.setText("Server running on port 5000 (TLS). Storage: server-storage/users");
+                    info.setText("Server running on port " + running.port() + " (TLS). Storage: " + running.storageDir());
                     fingerprint.setText(tls.fingerprint());
                 });
             } catch (Exception e) {
-                Platform.runLater(() -> info.setText("Server failed to start: " + e.getMessage()));
+                String why = startFailure(e, config);
+                Platform.runLater(() -> info.setText("Server failed to start: " + why));
             }
         }, "server-start");
         starter.setDaemon(true);
         starter.start();
+    }
+
+    /** A message that says what to change, for the errors people actually hit. */
+    static String startFailure(Exception e, ServerConfig config) {
+        if (e instanceof BindException && config != null) {
+            return "port " + config.port() + " is already in use (is another server running?). "
+                    + "Start with --port <number> or set port=<number> in " + ServerConfig.CONFIG_FILE + ".";
+        }
+        if (e instanceof IllegalArgumentException) return e.getMessage();
+        return e.getMessage() == null ? e.toString() : e.getMessage();
     }
 }

@@ -13,6 +13,7 @@ Windows (PowerShell); use `./mvnw` on Unix shells.
 ```powershell
 .\mvnw.cmd compile                 # build
 .\mvnw.cmd -Pserver javafx:run     # run server (GUI, listens on port 5000)
+.\mvnw.cmd -Pserver javafx:run "-Djavafx.args=--port 5050 --storage D:\ft-data"   # other port / storage
 .\mvnw.cmd -Pclient javafx:run     # run a client (start several in separate terminals)
 .\mvnw.cmd test                    # run all tests
 .\mvnw.cmd test -Dtest=FileTransferServerTest   # one test class
@@ -23,7 +24,7 @@ Windows (PowerShell); use `./mvnw` on Unix shells.
   - `SafeNamesTest`, `AccountStoreTest`, `KnownServersTest`: plain unit tests.
   - `FileTransferServerTest`: starts a real TLS server on a free port in a `@TempDir` and speaks the raw wire protocol, so a protocol change must update its `Wire` helper too. Creating the test certificate runs `keytool` once per class.
   - `ClientConnectionTest`: runs `ClientConnection` against a scripted fake server (deterministic stalls and cut-offs). It starts the JavaFX toolkit (`Platform.startup`), so it needs a desktop session, not a headless CI box.
-- Runtime data goes to `server-storage/` in the working directory (git-ignored).
+- Runtime data goes to `server-storage/` in the working directory (git-ignored), unless `--storage` or `server.properties` says otherwise.
 
 ## Architecture
 
@@ -66,5 +67,5 @@ users/<user>/threads/<peer>/<messageId>.meta  # chat history, one Properties fil
 
 ### Known issues
 - `messages*.properties` must stay UTF-8: Java 9+ reads resource bundles as UTF-8. The Arabic file was once saved with a non-UTF-8 encoding, which turned every character into `?`. Client UI text goes through `client.I18n` (`I18n.bind(key)` for live bindings that follow language switches); add new strings to all three `messages*.properties` files.
-- The port (5000) and storage path are hard-coded in `ServerApp`; client defaults are in `ClientApp`.
+- Server port and storage come from `ServerConfig.load`: `--port`/`--storage` args, then `server.properties` in the working directory (git-ignored), then 5000 / `server-storage`. `FileTransferServer.startAsync` binds before returning, so a busy port throws `BindException` and `ServerApp` shows it. Client defaults (127.0.0.1:5000) are in `ClientApp`.
 - The server certificate is created with `keytool` from `java.home/bin`. A jpackage/jlink runtime built with `--strip-native-commands` has no `keytool`, so a packaged server would need the certificate created another way.

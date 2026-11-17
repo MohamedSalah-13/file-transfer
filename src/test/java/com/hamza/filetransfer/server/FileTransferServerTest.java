@@ -62,6 +62,13 @@ class FileTransferServerTest {
     }
 
     @Test
+    void aBusyPortFailsAtStartInsteadOfSilently() throws Exception {
+        AccountStore accounts = new AccountStore(storage.resolve("other-accounts.properties"));
+        FileTransferServer second = new FileTransferServer(port, storage.resolve("other-users"), accounts, serverTls.context(), s -> {});
+        assertThrows(java.net.BindException.class, second::startAsync, "the first server already holds this port");
+    }
+
+    @Test
     void theCertificateIsKeptAcrossRestarts() throws Exception {
         assertEquals(serverTls.fingerprint(), ServerTls.loadOrCreate(tlsDir).fingerprint());
     }

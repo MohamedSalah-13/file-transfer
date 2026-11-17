@@ -77,21 +77,24 @@ public class FileTransferServer {
         this.onNewSession = onNewSession;
     }
 
-    public void startAsync() {
-        Thread t = new Thread(this::run, "server-acceptor");
+    /**
+     * Opens the port right away, so a problem such as a port already in use is thrown here
+     * (a {@link java.net.BindException}), then accepts clients on a background thread.
+     */
+    public void startAsync() throws IOException {
+        Files.createDirectories(usersDir);
+        SSLServerSocket serverSocket = (SSLServerSocket) tls.getServerSocketFactory().createServerSocket(port);
+        serverSocket.setEnabledProtocols(new String[]{Tls.PROTOCOL});
+        Thread t = new Thread(() -> acceptLoop(serverSocket), "server-acceptor");
         t.setDaemon(true);
         t.start();
     }
 
-    private void run() {
-        try {
-            Files.createDirectories(usersDir);
-            try (SSLServerSocket serverSocket = (SSLServerSocket) tls.getServerSocketFactory().createServerSocket(port)) {
-                serverSocket.setEnabledProtocols(new String[]{Tls.PROTOCOL});
-                while (true) {
-                    Socket s = serverSocket.accept();
-                    new Thread(() -> handleClient(s), "client-" + s.getRemoteSocketAddress()).start();
-                }
+    private void acceptLoop(SSLServerSocket serverSocket) {
+        try (serverSocket) {
+            while (true) {
+                Socket s = serverSocket.accept();
+                new Thread(() -> handleClient(s), "client-" + s.getRemoteSocketAddress()).start();
             }
         } catch (Exception e) {
             e.printStackTrace();
