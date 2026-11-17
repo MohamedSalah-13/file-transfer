@@ -70,7 +70,17 @@ public final class I18n {
     static String messageTime(String isoInstant, ZonedDateTime now) {
         ZonedDateTime t = parseInstant(isoInstant, now.getZone());
         if (t == null) return isoInstant == null ? "" : isoInstant;
+        return relative(t, now);
+    }
 
+    /** Same as {@link #messageTime(String)} for epoch millis; 0 or less means "no time" (empty). */
+    public static String messageTime(long epochMillis) {
+        if (epochMillis <= 0) return "";
+        ZonedDateTime now = ZonedDateTime.now();
+        return relative(Instant.ofEpochMilli(epochMillis).atZone(now.getZone()), now);
+    }
+
+    private static String relative(ZonedDateTime t, ZonedDateTime now) {
         LocalDate day = t.toLocalDate();
         LocalDate today = now.toLocalDate();
         String time = format(t, "time_pattern_today");

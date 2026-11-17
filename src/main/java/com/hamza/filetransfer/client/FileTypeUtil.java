@@ -1,14 +1,9 @@
 package com.hamza.filetransfer.client;
 
 import java.time.Instant;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 
 public final class FileTypeUtil {
-
-    private static final DateTimeFormatter TIME_FMT =
-            DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault());
 
     private FileTypeUtil() {}
 
@@ -44,10 +39,5 @@ public final class FileTypeUtil {
         } catch (Exception e) {
             return 0L;
         }
-    }
-
-    public static String formatTime(long millis) {
-        if (millis <= 0) return "";
-        return TIME_FMT.format(Instant.ofEpochMilli(millis));
     }
 }

@@ -475,8 +475,7 @@ public class ClientApp extends Application {
 
         item.setLastPreview(preview);
 
-        String timeLabel = FileTypeUtil.formatTime(activityMillis);
-        item.updateLastActivity(activityMillis, timeLabel);
+        item.updateLastActivity(activityMillis);
 
         if (activePeer == null || !activePeer.equals(fromUser)) {
             item.bumpUnread();
@@ -508,7 +507,7 @@ public class ClientApp extends Application {
 
         long ms = FileTypeUtil.parseIsoMillis(last.timestampProperty().get());
         item.setLastPreview(preview);
-        item.updateLastActivity(ms, FileTypeUtil.formatTime(ms));
+        item.updateLastActivity(ms);
     }
 
     private void refreshThreadIfActive(String peer) {
