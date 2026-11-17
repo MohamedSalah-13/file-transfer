@@ -29,7 +29,7 @@ Windows (PowerShell); use `./mvnw` on Unix shells.
 
 Packages under `src/main/java/com/hamza/filetransfer/`:
 - `shared/`: wire constants (`Protocol`), limits (`Limits`: 200 MB max file, 64 KB buffer), and `SafeNames` (validation/sanitizing for anything that becomes a path).
-- `server/`: `FileTransferServer` (socket logic, no JavaFX UI code), `AccountStore` (passwords), `ServerApp` (table of `TransferSession`s).
+- `server/`: `FileTransferServer` (socket logic, no JavaFX UI code), `AccountStore` (passwords), `ServerApp` (table of `TransferSession`s). The server updates a `TransferSession` from socket threads; `ServerApp` calls `deliverUpdatesOn(Platform::runLater)` so its properties change only on the FX thread (progress updates are coalesced).
 - `client/`: `ClientConnection` (socket logic + callbacks) and `ClientApp` (the whole client UI in one class, built in code — no FXML).
 - `HelloApplication` / `HelloController` / `Launcher` / `hello-view.fxml` are unused template leftovers.
 
@@ -65,7 +65,6 @@ users/<user>/threads/<peer>/<messageId>.meta  # chat history, one Properties fil
 - All traffic is TLS 1.3. Clients pin the server certificate by fingerprint (trust on first use), so the first connection is only safe if the user compares the fingerprint with the server window. Never add a trust-all fallback.
 
 ### Known issues
-- `TransferSession` JavaFX properties are updated from server socket threads, not the FX thread.
 - `messages*.properties` must stay UTF-8: Java 9+ reads resource bundles as UTF-8. The Arabic file was once saved with a non-UTF-8 encoding, which turned every character into `?`. Client UI text goes through `client.I18n` (`I18n.bind(key)` for live bindings that follow language switches); add new strings to all three `messages*.properties` files.
 - The port (5000) and storage path are hard-coded in `ServerApp`; client defaults are in `ClientApp`.
 - The server certificate is created with `keytool` from `java.home/bin`. A jpackage/jlink runtime built with `--strip-native-commands` has no `keytool`, so a packaged server would need the certificate created another way.

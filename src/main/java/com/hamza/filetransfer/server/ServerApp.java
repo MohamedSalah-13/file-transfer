@@ -88,7 +88,11 @@ public class ServerApp extends Application {
                         Path.of("server-storage", "users"),
                         accounts,
                         tls.context(),
-                        session -> Platform.runLater(() -> sessions.add(session))
+                        session -> {
+                            // Called on the socket thread before any progress update.
+                            session.deliverUpdatesOn(Platform::runLater);
+                            Platform.runLater(() -> sessions.add(session));
+                        }
                 ).startAsync();
 
                 Platform.runLater(() -> {
