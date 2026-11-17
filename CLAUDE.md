@@ -14,10 +14,15 @@ Windows (PowerShell); use `./mvnw` on Unix shells.
 .\mvnw.cmd compile                 # build
 .\mvnw.cmd -Pserver javafx:run     # run server (GUI, listens on port 5000)
 .\mvnw.cmd -Pclient javafx:run     # run a client (start several in separate terminals)
+.\mvnw.cmd test                    # run all tests
+.\mvnw.cmd test -Dtest=FileTransferServerTest   # one test class
 ```
 
 - The `server` / `client` Maven profiles only switch `mainClass` (`server.ServerLauncher` / `client.ClientLauncher`). Without a profile `javafx:run` starts the server.
-- There is no `src/test` yet. JUnit 5 is declared in the pom, but no Surefire version is pinned, and the project is a JPMS module (`module-info.java`). Adding tests needs a modern `maven-surefire-plugin` (3.x) in the pom first.
+- Tests (JUnit 5, Surefire 3.x) live in `src/test/java` in the same packages as the code, so Surefire patches them into the JPMS module and they can use package-private members.
+  - `SafeNamesTest`, `AccountStoreTest`: plain unit tests.
+  - `FileTransferServerTest`: starts a real server on a free port in a `@TempDir` and speaks the raw wire protocol, so a protocol change must update its `Wire` helper too.
+  - `ClientConnectionTest`: runs `ClientConnection` against a scripted fake server (deterministic stalls and cut-offs). It starts the JavaFX toolkit (`Platform.startup`), so it needs a desktop session, not a headless CI box.
 - Runtime data goes to `server-storage/` in the working directory (git-ignored).
 
 ## Architecture

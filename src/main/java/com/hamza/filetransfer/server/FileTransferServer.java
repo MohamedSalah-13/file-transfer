@@ -145,7 +145,9 @@ public class FileTransferServer {
                 String requested = SafeNames.normalizeUsername(in.readUTF());
                 String token = in.readUTF();
 
-                OnlineClient owner = requested == null ? null : online.get(requested);
+                // `online` is keyed by the canonical name, like everything after login.
+                String canonical = SafeNames.isValidUsername(requested) ? accounts.canonicalName(requested) : null;
+                OnlineClient owner = canonical == null ? null : online.get(canonical);
                 if (owner == null || !MessageDigest.isEqual(
                         owner.token().getBytes(StandardCharsets.UTF_8), token.getBytes(StandardCharsets.UTF_8))) {
                     authFailed(out, lock, ErrorCode.INVALID_SESSION);

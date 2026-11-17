@@ -61,6 +61,13 @@
                 </configuration>
             </plugin>
 
+            <!-- JUnit 5 on a JPMS module: Surefire 3.x patches the test classes into the module. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+            </plugin>
+
             <plugin>
                 <groupId>org.openjfx</groupId>
                 <artifactId>javafx-maven-plugin</artifactId>
