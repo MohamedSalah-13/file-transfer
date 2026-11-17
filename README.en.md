@@ -2,7 +2,7 @@
 
 [العربية](README.md) | **English**
 
-![Version](https://img.shields.io/badge/version-2.1.0-blue) ![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white) ![JavaFX](https://img.shields.io/badge/JavaFX-21-1F6FB2) ![AtlantaFX](https://img.shields.io/badge/AtlantaFX-2.0-6C4AB6) ![Maven](https://img.shields.io/badge/Maven-wrapper-C71A36?logo=apachemaven&logoColor=white) ![Sockets](https://img.shields.io/badge/Sockets-client--server-555555) ![License](https://img.shields.io/badge/License-MIT-green)
+![Version](https://img.shields.io/badge/version-2.2.0-blue) ![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white) ![JavaFX](https://img.shields.io/badge/JavaFX-21-1F6FB2) ![AtlantaFX](https://img.shields.io/badge/AtlantaFX-2.0-6C4AB6) ![Maven](https://img.shields.io/badge/Maven-wrapper-C71A36?logo=apachemaven&logoColor=white) ![Sockets](https://img.shields.io/badge/Sockets-client--server-555555) ![License](https://img.shields.io/badge/License-MIT-green)
 
 A JavaFX app for sending files and chatting between computers on a local network (LAN), like "WhatsApp for files". One server and any number of clients talk directly over TCP sockets. No internet connection and no database are needed.
 
