@@ -413,7 +413,8 @@ public class ClientApp extends Application {
 
     /**
      * Connects and logs in off the FX thread (network, TLS handshake and the server's password hashing
-     * all wait). On the first connection to a server, asks the user to trust its certificate and retries.
+     * all wait). On the first connection to a server, asks the user to trust its certificate and retries;
+     * if the certificate changed, offers to trust the new one only after an explicit confirmation.
      * {@code password} is wiped once the attempt is finished.
      */
     private void connectInBackground(Stage stage, String host, int port, String user, char[] password,
@@ -433,19 +434,19 @@ public class ClientApp extends Application {
                 AppError err = AppError.from(ex);
                 Platform.runLater(() -> {
                     btnConnect.setDisable(false);
-                    if (AppError.UNTRUSTED_SERVER.equals(err.code())
-                            && askToTrust(stage, host, port, err.args().getFirst())) {
+                    boolean retry = switch (err.code()) {
+                        case AppError.UNTRUSTED_SERVER -> askToTrust(stage, host, port, err.args().getFirst());
+                        case AppError.SERVER_CERT_CHANGED ->
+                                askToTrustChanged(stage, host, port, err.args().get(0), err.args().get(1));
+                        default -> false;
+                    };
+                    if (retry) {
+                        // The retry checks the certificate again: it must be exactly the one just trusted.
                         connectInBackground(stage, host, port, user, password, btnConnect, tfUser, lblStatus);
                         return;
                     }
                     Arrays.fill(password, '\0');
                     setStatus(lblStatus, "status_connect_failed", err);
-                    if (AppError.SERVER_CERT_CHANGED.equals(err.code())) {
-                        Alert alert = new Alert(Alert.AlertType.ERROR, I18n.error(err), ButtonType.OK);
-                        alert.setTitle(I18n.get("cert_changed_title"));
-                        alert.setHeaderText(I18n.get("cert_changed_title"));
-                        showLocalized(stage, alert);
-                    }
                 });
             }
         }, "connect");
@@ -458,23 +459,64 @@ public class ClientApp extends Application {
         ButtonType trust = new ButtonType(I18n.get("trust_button"), ButtonBar.ButtonData.OK_DONE);
         ButtonType cancel = new ButtonType(I18n.get("cancel"), ButtonBar.ButtonData.CANCEL_CLOSE);
 
-        // Read-only but selectable, so it can be copied; two monospace lines so all 32 bytes are visible.
-        TextArea fp = new TextArea(fingerprint);
-        fp.setEditable(false);
-        fp.setWrapText(true);
-        fp.setPrefRowCount(2);
-        fp.setStyle("-fx-font-family: monospace;");
-        fp.setNodeOrientation(NodeOrientation.LEFT_TO_RIGHT);
         Label explain = new Label(I18n.get("trust_content"));
         explain.setWrapText(true);
 
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION, "", trust, cancel);
         alert.setTitle(I18n.get("trust_title"));
         alert.setHeaderText(I18n.get("trust_header", host + ":" + port));
-        alert.getDialogPane().setContent(new VBox(10, explain, fp));
+        alert.getDialogPane().setContent(new VBox(10, explain, fingerprintBox(fingerprint)));
         alert.getDialogPane().setPrefWidth(620);
 
         if (showLocalized(stage, alert).orElse(cancel) != trust) return false;
+        return saveTrust(host, port, fingerprint);
+    }
+
+    /**
+     * The server presents a different certificate than the trusted one. Shows both fingerprints;
+     * "Close" is the default, and the trust button stays disabled until the user confirms they
+     * compared the new fingerprint with the server window. Saves the new one if they trust it.
+     */
+    private boolean askToTrustChanged(Stage stage, String host, int port, String newFingerprint, String oldFingerprint) {
+        ButtonType trustNew = new ButtonType(I18n.get("cert_changed_trust"), ButtonBar.ButtonData.OTHER);
+        ButtonType close = new ButtonType(I18n.get("close"), ButtonBar.ButtonData.CANCEL_CLOSE);
+
+        Label explain = new Label(I18n.get("cert_changed_content"));
+        explain.setWrapText(true);
+        CheckBox compared = new CheckBox(I18n.get("cert_changed_confirm"));
+        compared.setWrapText(true);
+
+        Alert alert = new Alert(Alert.AlertType.WARNING, "", trustNew, close);
+        alert.setTitle(I18n.get("cert_changed_title"));
+        alert.setHeaderText(I18n.get("cert_changed_header", host + ":" + port));
+        alert.getDialogPane().setContent(new VBox(8,
+                explain,
+                new Label(I18n.get("cert_changed_old")), fingerprintBox(oldFingerprint),
+                new Label(I18n.get("cert_changed_new")), fingerprintBox(newFingerprint),
+                compared));
+        alert.getDialogPane().setPrefWidth(640);
+
+        Button trustButton = (Button) alert.getDialogPane().lookupButton(trustNew);
+        trustButton.disableProperty().bind(compared.selectedProperty().not());
+        trustButton.setDefaultButton(false);
+        ((Button) alert.getDialogPane().lookupButton(close)).setDefaultButton(true); // Enter must not trust
+
+        if (showLocalized(stage, alert).orElse(close) != trustNew || !compared.isSelected()) return false;
+        return saveTrust(host, port, newFingerprint);
+    }
+
+    /** Read-only but selectable, so it can be copied; two monospace lines so all 32 bytes are visible. */
+    private static TextArea fingerprintBox(String fingerprint) {
+        TextArea fp = new TextArea(fingerprint);
+        fp.setEditable(false);
+        fp.setWrapText(true);
+        fp.setPrefRowCount(2);
+        fp.setStyle("-fx-font-family: monospace;");
+        fp.setNodeOrientation(NodeOrientation.LEFT_TO_RIGHT);
+        return fp;
+    }
+
+    private boolean saveTrust(String host, int port, String fingerprint) {
         try {
             knownServers.trust(host, port, fingerprint);
             return true;

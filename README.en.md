@@ -106,7 +106,7 @@ server-storage/
 
 - The port (`5000`) and the storage folder are hard-coded.
 - The server and the clients must use the same protocol version. If they don't, the server refuses the login with a clear message asking to install the same version on both. Since 2.0.0 the connection is encrypted, so it does not work with 1.x servers or clients.
-- Deleting `server-storage/tls` creates a new certificate, and every client then refuses to connect until each user removes the server's line from `~/.file-transfer/known_servers.properties` and trusts it again.
+- Deleting `server-storage/tls` creates a new certificate. Every client then blocks the connection and shows the old and new fingerprints. Its "Trust the new certificate" button only works after the user confirms they compared the new fingerprint with the server window.
 
 ## Documentation
 
