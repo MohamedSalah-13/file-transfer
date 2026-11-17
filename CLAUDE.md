@@ -31,7 +31,6 @@ Packages under `src/main/java/com/hamza/filetransfer/`:
 - `shared/`: wire constants (`Protocol`), limits (`Limits`: 200 MB max file, 64 KB buffer), and `SafeNames` (validation/sanitizing for anything that becomes a path).
 - `server/`: `FileTransferServer` (socket logic, no JavaFX UI code), `AccountStore` (passwords), `ServerApp` (table of `TransferSession`s). The server updates a `TransferSession` from socket threads; `ServerApp` calls `deliverUpdatesOn(Platform::runLater)` so its properties change only on the FX thread (progress updates are coalesced).
 - `client/`: `ClientConnection` (socket logic + callbacks) and `ClientApp` (the whole client UI in one class, built in code — no FXML).
-- `HelloApplication` / `HelloController` / `Launcher` / `hello-view.fxml` are unused template leftovers.
 
 ### Wire protocol
 - **TLS 1.3 on every socket** (CONTROL and TRANSFER; settings in `shared.Tls`). Since 2.0.0 there is no plain-TCP mode, so 1.x clients and servers can't connect.
