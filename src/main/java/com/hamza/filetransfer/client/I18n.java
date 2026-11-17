@@ -6,6 +6,12 @@ import javafx.beans.property.ReadOnlyObjectProperty;
 import javafx.beans.property.SimpleObjectProperty;
 
 import java.text.MessageFormat;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.Locale;
 import java.util.MissingResourceException;
 import java.util.ResourceBundle;
@@ -50,6 +56,49 @@ public final class I18n {
     /** Live translation that follows language changes. */
     public static StringBinding bind(String key, Object... args) {
         return Bindings.createStringBinding(() -> get(key, args), BUNDLE);
+    }
+
+    /**
+     * Short, readable message time in the user's time zone, relative to today:
+     * "09:30", "Yesterday, 09:30", "17 Nov, 09:30", or "17 Nov 2025, 09:30" for other years.
+     * Falls back to the raw text if it is not an ISO-8601 instant.
+     */
+    public static String messageTime(String isoInstant) {
+        return messageTime(isoInstant, ZonedDateTime.now());
+    }
+
+    static String messageTime(String isoInstant, ZonedDateTime now) {
+        ZonedDateTime t = parseInstant(isoInstant, now.getZone());
+        if (t == null) return isoInstant == null ? "" : isoInstant;
+
+        LocalDate day = t.toLocalDate();
+        LocalDate today = now.toLocalDate();
+        String time = format(t, "time_pattern_today");
+
+        if (day.equals(today)) return time;
+        if (day.equals(today.minusDays(1))) return get("time_yesterday", time);
+        if (day.getYear() == today.getYear()) return format(t, "time_pattern_this_year");
+        return format(t, "time_pattern_older");
+    }
+
+    /** Full date and time (with weekday) for tooltips. */
+    public static String messageTimeFull(String isoInstant) {
+        ZonedDateTime t = parseInstant(isoInstant, ZoneId.systemDefault());
+        return t == null ? (isoInstant == null ? "" : isoInstant) : format(t, "time_pattern_full");
+    }
+
+    private static ZonedDateTime parseInstant(String iso, ZoneId zone) {
+        if (iso == null || iso.isBlank()) return null;
+        try {
+            return Instant.parse(iso.trim()).atZone(zone);
+        } catch (DateTimeParseException e) {
+            return null;
+        }
+    }
+
+    /** Patterns live in the bundle so each language controls word order and month names. */
+    private static String format(ZonedDateTime t, String patternKey) {
+        return DateTimeFormatter.ofPattern(get(patternKey), BUNDLE.get().getLocale()).format(t);
     }
 
     /**

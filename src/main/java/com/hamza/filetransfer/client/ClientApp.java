@@ -644,7 +644,7 @@ public class ClientApp extends Application {
                 body.setWrapText(true);
                 bodyNode = body;
 
-                meta = metaLine(item.timestampProperty().get());
+                meta = metaLine(I18n.messageTime(item.timestampProperty().get()));
 
             } else {
                 String fileName = item.fileNameProperty().get();
@@ -676,8 +676,8 @@ public class ClientApp extends Application {
                 }
 
                 meta = item.downloadableProperty().get()
-                        ? metaLine(humanSize(item.fileSizeProperty().get()), item.timestampProperty().get(), I18n.get("bubble_double_click"))
-                        : metaLine(humanSize(item.fileSizeProperty().get()), item.timestampProperty().get());
+                        ? metaLine(humanSize(item.fileSizeProperty().get()), I18n.messageTime(item.timestampProperty().get()), I18n.get("bubble_double_click"))
+                        : metaLine(humanSize(item.fileSizeProperty().get()), I18n.messageTime(item.timestampProperty().get()));
             }
 
             VBox box = new VBox(4, title, bodyNode, meta);
@@ -685,6 +685,8 @@ public class ClientApp extends Application {
             StackPane bubble = new StackPane(box);
             bubble.getStyleClass().add("bubble");
             bubble.getStyleClass().add(out ? "bubble-out" : "bubble-in");
+            // Full date on hover; the bubble itself shows the short form.
+            Tooltip.install(bubble, new Tooltip(I18n.messageTimeFull(item.timestampProperty().get())));
 
             HBox row = new HBox(bubble);
             row.setAlignment(out ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
