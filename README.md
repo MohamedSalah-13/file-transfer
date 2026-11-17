@@ -1,8 +1,83 @@
 # File Transfer
 
-![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white) ![JavaFX](https://img.shields.io/badge/JavaFX-21-1F6FB2) ![Sockets](https://img.shields.io/badge/Sockets-client--server-555555) ![LAN](https://img.shields.io/badge/LAN-file%20transfer-0A7BBB)
+![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white) ![JavaFX](https://img.shields.io/badge/JavaFX-21-1F6FB2) ![AtlantaFX](https://img.shields.io/badge/AtlantaFX-2.0-6C4AB6) ![Maven](https://img.shields.io/badge/Maven-wrapper-C71A36?logo=apachemaven&logoColor=white) ![Sockets](https://img.shields.io/badge/Sockets-client--server-555555) ![License](https://img.shields.io/badge/License-MIT-green)
 
-برنامج JavaFX لنقل الملفات والمحادثة بين الأجهزة على الشبكة المحلية، بسيرفر وعملاء عبر Sockets. طريقة التشغيل في [docs/RUNNING.md](docs/RUNNING.md).
+برنامج JavaFX لنقل الملفات والمحادثة بين الأجهزة على الشبكة المحلية (LAN)، أشبه بـ "واتساب للملفات": سيرفر واحد وأي عدد من العملاء يتواصلون عبر TCP Sockets مباشرة.
+
+## المميزات
+
+- **محادثة نصية وإرسال ملفات** بين المستخدمين، مع حفظ سجل كل محادثة على السيرفر.
+- **إشعارات فورية**: السيرفر يرسل للمستلم الرسائل والملفات الجديدة لحظة وصولها.
+- **تنزيل متوازٍ**: كل تنزيل يفتح اتصالًا منفصلًا، فلا يوقف المحادثة.
+- **قائمة مستخدمين ذكية**: عدد الرسائل غير المقروءة، معاينة آخر رسالة، بحث، وترتيب حسب غير المقروء ثم آخر نشاط.
+- **لوحة النقل**: متابعة حالة التنزيلات، مع إمكانية إخفائها.
+- **ثيمات متعددة** من AtlantaFX (Primer و Nord و Cupertino بالوضعين الفاتح والداكن، و Dracula).
+- **حسابات بكلمات مرور**: أول دخول باسم جديد يسجّل الحساب، وكلمات المرور محفوظة كـ hash (PBKDF2).
+- **واجهة للسيرفر** تعرض جدول عمليات النقل وتقدّم كل منها.
+- حد أقصى لحجم الملف: **200 MB**.
+
+## المتطلبات
+
+- JDK 21
+- لا تحتاج تثبيت Maven، فالمشروع يحتوي على Maven Wrapper (`mvnw` / `mvnw.cmd`).
+
+## التشغيل السريع
+
+```powershell
+.\mvnw.cmd -Pserver javafx:run     # تشغيل السيرفر (يستمع على المنفذ 5000)
+.\mvnw.cmd -Pclient javafx:run     # تشغيل عميل (شغّل أكثر من واحد في نوافذ مختلفة)
+```
+
+على Linux أو macOS استخدم `./mvnw` بدل `.\mvnw.cmd`.
+
+التفاصيل الكاملة (خانات واجهة العميل، الحسابات، إعدادات الشبكة والجدار الناري) في [docs/RUNNING.md](docs/RUNNING.md).
+
+## بنية المشروع
+
+```
+src/main/java/com/hamza/filetransfer/
+├── shared/   # ثوابت البروتوكول (Protocol)، الحدود (Limits)، والتحقق من الأسماء والمسارات (SafeNames)
+├── server/   # FileTransferServer (منطق الـ sockets)، AccountStore (الحسابات)، ServerApp (الواجهة)
+└── client/   # ClientConnection (الاتصال)، ClientApp (واجهة العميل كاملة مبنية بالكود)
+```
+
+### طريقة الاتصال
+
+لكل مستخدم نوعان من الاتصالات:
+
+- **CONTROL**: اتصال واحد لكل مستخدم يبدأ بـ `HELLO user password` ويرد السيرفر بـ `HELLO_OK` ومعه session token. يُستخدم لعرض المستخدمين والمحادثات، ورفع الملفات والرسائل، واستقبال الإشعارات.
+- **TRANSFER**: اتصالات إضافية للتنزيل تبدأ بـ `HELLO_TRANSFER user token`، والـ token صالح فقط طالما اتصال CONTROL مفتوح.
+
+### التخزين على السيرفر
+
+لا توجد قاعدة بيانات؛ كل شيء يُحفظ في مجلد `server-storage/` داخل مجلد التشغيل:
+
+```
+server-storage/
+├── accounts.properties                            # الحسابات (hash لكلمات المرور)
+└── users/<user>/
+    ├── inbox/<messageId>.bin | .meta              # الملفات المستلمة وبياناتها
+    └── threads/<peer>/<messageId>.meta            # سجل المحادثة، ملف لكل رسالة
+```
+
+## الأمان
+
+- كل اسم مستخدم أو اسم ملف قادم من الشبكة يمر على `SafeNames` قبل استخدامه في مسار، لمنع الخروج من مجلد التخزين (path traversal).
+- العميل ينظّف أسماء الملفات المستلمة ولا يكتب فوق ملف موجود.
+- 5 محاولات دخول خاطئة متتالية تقفل الحساب 30 ثانية.
+- **الاتصال غير مشفّر (لا يوجد TLS)**، وكلمات المرور تمر على الشبكة كنص صريح. استخدم البرنامج على شبكة موثوقة فقط.
+
+## قيود معروفة
+
+- رفع ملف كبير يتم على اتصال CONTROL، فيوقف المحادثة والإشعارات لنفس المستخدم حتى ينتهي الرفع.
+- المنفذ (`5000`) ومجلد التخزين ثابتان في الكود.
+- معظم نصوص واجهة العميل بالإنجليزية، والترجمة العربية تغطي جزءًا صغيرًا منها فقط.
+- لا توجد اختبارات آلية بعد.
+
+## التوثيق
+
+- [docs/RUNNING.md](docs/RUNNING.md): طريقة التشغيل بالتفصيل.
+- `docs/1.md` إلى `docs/15.md`: ملاحظات التصميم خطوة بخطوة التي بُني عليها المشروع.
 
 ## الترخيص
 
