@@ -24,6 +24,7 @@ import javafx.stage.Stage;
 
 import com.hamza.filetransfer.shared.Discovery;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.*;
 
@@ -69,9 +70,10 @@ public class ClientApp extends Application {
         I18n.setLanguage("en"); // Default language
         ThemeManager.applyTheme(ThemeManager.getThemes().getFirst());
 
-        TextField tfHost = new TextField("127.0.0.1");
-        TextField tfPort = new TextField("5000");
-        TextField tfUser = new TextField("user1");
+        LastLogin last = LastLogin.load(LastLogin.defaultLocation());
+        TextField tfHost = new TextField(last.host());
+        TextField tfPort = new TextField(Integer.toString(last.port()));
+        TextField tfUser = new TextField(last.user());
         PasswordField pfPassword = new PasswordField();
         pfPassword.promptTextProperty().bind(I18n.bind("password_prompt"));
         Button btnConnect = new Button();
@@ -384,6 +386,9 @@ public class ClientApp extends Application {
         stage.titleProperty().bind(I18n.bind("app_title"));
         stage.setScene(scene);
         stage.show();
+        // A returning user only needs the password. On a first start keep the field unfocused,
+        // so its prompt (which explains how new accounts work) stays visible.
+        if (!last.equals(LastLogin.DEFAULT)) pfPassword.requestFocus();
     }
 
     private void chooseAndDownload(Stage stage, String messageId, String displayName) {
@@ -432,6 +437,7 @@ public class ClientApp extends Application {
                 // The constructor wipes the array it gets; keep ours for a retry after trusting the server.
                 ClientConnection c = new ClientConnection(host, port, user, password.clone(), knownServers);
                 Arrays.fill(password, '\0');
+                rememberLogin(new LastLogin(host, port, c.getUsername()));
                 Platform.runLater(() -> {
                     btnConnect.setDisable(false);
                     attachConnection(c, tfUser, lblStatus);
@@ -458,6 +464,15 @@ public class ClientApp extends Application {
         }, "connect");
         t.setDaemon(true);
         t.start();
+    }
+
+    /** Saves the login for the next start. Runs on the connect thread; a failure only loses the convenience. */
+    private static void rememberLogin(LastLogin login) {
+        try {
+            login.save(LastLogin.defaultLocation());
+        } catch (IOException | RuntimeException e) {
+            System.err.println("Could not save the last login: " + e);
+        }
     }
 
     /** Shows the server's fingerprint and asks the user to trust it. Saves it if they do. */

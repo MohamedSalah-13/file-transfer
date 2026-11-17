@@ -21,7 +21,7 @@ Windows (PowerShell); use `./mvnw` on Unix shells.
 
 - The `server` / `client` Maven profiles only switch `mainClass` (`server.ServerLauncher` / `client.ClientLauncher`). Without a profile `javafx:run` starts the server.
 - Tests (JUnit 5, Surefire 3.x) live in `src/test/java` in the same packages as the code, so Surefire patches them into the JPMS module and they can use package-private members.
-  - `SafeNamesTest`, `AccountStoreTest`, `KnownServersTest`: plain unit tests.
+  - `SafeNamesTest`, `AccountStoreTest`, `KnownServersTest`, `LastLoginTest`: plain unit tests.
   - `FileTransferServerTest`: starts a real TLS server on a free port in a `@TempDir` and speaks the raw wire protocol, so a protocol change must update its `Wire` helper too. Creating the test certificate runs `keytool` once per class.
   - `ClientConnectionTest`: runs `ClientConnection` against a scripted fake server (deterministic stalls and cut-offs). It starts the JavaFX toolkit (`Platform.startup`), so it needs a desktop session, not a headless CI box.
 - Runtime data goes to `server-storage/` in the working directory (git-ignored), unless `--storage` or `server.properties` says otherwise.
@@ -68,5 +68,5 @@ users/<user>/threads/<peer>/<messageId>.meta  # chat history, one Properties fil
 
 ### Known issues
 - `messages*.properties` must stay UTF-8: Java 9+ reads resource bundles as UTF-8. The Arabic file was once saved with a non-UTF-8 encoding, which turned every character into `?`. Client UI text goes through `client.I18n` (`I18n.bind(key)` for live bindings that follow language switches); add new strings to all three `messages*.properties` files.
-- Server port and storage come from `ServerConfig.load`: `--port`/`--storage` args, then `server.properties` in the working directory (git-ignored), then 5000 / `server-storage`. `FileTransferServer.startAsync` binds before returning, so a busy port throws `BindException` and `ServerApp` shows it. Client defaults (127.0.0.1:5000) are in `ClientApp`.
+- Server port and storage come from `ServerConfig.load`: `--port`/`--storage` args, then `server.properties` in the working directory (git-ignored), then 5000 / `server-storage`. `FileTransferServer.startAsync` binds before returning, so a busy port throws `BindException` and `ServerApp` shows it. The client fills host, port and user from `LastLogin` (`~/.file-transfer/client.properties`, saved after each successful login with the canonical name, never the password); a missing or broken file gives the defaults in `LastLogin.DEFAULT` (127.0.0.1:5000, user1).
 - The server certificate is created with `keytool` from `java.home/bin`. A jpackage/jlink runtime built with `--strip-native-commands` has no `keytool`, so a packaged server would need the certificate created another way.

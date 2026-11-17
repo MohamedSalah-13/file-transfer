@@ -17,6 +17,7 @@ A JavaFX app for sending files and chatting between computers on a local network
 
 ### Interface
 - **Find the server automatically**: a "Find servers" button lists the servers on the same network and fills in the address and port with one click.
+- **Remembers the last login**: the address, port and username are filled in at start, so you only type the password (which is never saved).
 - **Smart user list**: unread counts, a preview of the last message, search, and sorting by unread first, then by latest activity.
 - **Readable times** in chat bubbles and in the sidebar: just the time for today's messages, then "Yesterday", then the date. Hovering over a message's time shows the full date, and times update on their own after midnight.
 - **Arabic and English UI**, switchable while the app is running, with right-to-left layout for Arabic.
