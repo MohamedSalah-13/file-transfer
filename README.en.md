@@ -16,6 +16,8 @@ A JavaFX app for sending files and chatting between computers on a local network
 - Limits: **200 MB** per file and **2000 characters** per text message.
 
 ### Interface
+- **Settings window**: the ⚙ Settings button opens a "Connection" tab (server, port, user, password) and an "Appearance" tab (language, theme). The top bar only keeps the connection status and a Connect/Disconnect button. At start, the Connection tab opens by itself.
+- **Flexible side panels**: drag the divider between panels to make the users list or the transfers panel wider or narrower, and hide or show each one with its button in the top bar. The widths and which panels are shown are kept for next time.
 - **Find the server automatically**: a "Find servers" button lists the servers on the same network and fills in the address and port with one click.
 - **Remembers the last login**: the address, port and username are filled in at start, so you only type the password (which is never saved). The language and theme you picked come back too.
 - **Smart user list**: unread counts, a preview of the last message, search, and sorting by unread first, then by latest activity.

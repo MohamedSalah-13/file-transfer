@@ -3,7 +3,10 @@ package com.hamza.filetransfer.client;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
+import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.ObjectProperty;
+import javafx.beans.property.SimpleBooleanProperty;
+import javafx.geometry.Orientation;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -45,6 +48,8 @@ public class ClientApp extends Application {
         return a.getUsername().compareToIgnoreCase(b.getUsername());
     };
     private ClientConnection conn;
+    private final BooleanProperty connected = new SimpleBooleanProperty(false); // drives Connect/Disconnect
+    private SettingsWindow settings;
     private KnownServers knownServers; // servers whose TLS certificate this user trusted
     private String activePeer;
     private ListView<ChatMessage> chatListRef;
@@ -84,7 +89,7 @@ public class ClientApp extends Application {
         btnConnect.textProperty().bind(I18n.bind("connect"));
         Button btnFind = new Button();
         btnFind.textProperty().bind(I18n.bind("find_servers"));
-        btnFind.setOnAction(e -> findServers(stage, btnFind, tfHost, tfPort, pfPassword));
+        btnFind.setOnAction(e -> findServers(settings.stage(), btnFind, tfHost, tfPort, pfPassword));
 
         Label lblStatus = label("status_not_connected");
 
@@ -101,6 +106,7 @@ public class ClientApp extends Application {
             String selected = langPicker.getValue();
             I18n.setLanguage(selected.equals("العربية") ? "ar" : "en");
             applyOrientation(stage.getScene().getRoot());
+            settings.applyOrientation();
             if (chatListRef != null) chatListRef.refresh(); // bubbles read translations when rendered
             rememberAppearance(langPicker, themePicker);
         });
@@ -114,35 +120,49 @@ public class ClientApp extends Application {
             }
         });
 
-        Button btnToggleRight = new Button();
+        // ===== Settings window: Connection and Appearance tabs =====
+        tfHost.setPrefColumnCount(14);
+        tfPort.setPrefColumnCount(5);
+        tfUser.setPrefColumnCount(14);
+        pfPassword.setPrefColumnCount(20);
+        btnConnect.setDefaultButton(true); // Enter in the password field connects
+        Label lblSettingsStatus = new Label();
+        lblSettingsStatus.textProperty().bind(lblStatus.textProperty());
+        lblSettingsStatus.setWrapText(true);
 
-        tfHost.setPrefColumnCount(9);
-        tfPort.setPrefColumnCount(4);
-        tfUser.setPrefColumnCount(8);
-        pfPassword.setPrefColumnCount(14);
+        GridPane connectionForm = form();
+        connectionForm.addRow(0, label("host"), tfHost);
+        connectionForm.addRow(1, label("port"), new HBox(10, tfPort, btnFind));
+        connectionForm.addRow(2, label("user"), tfUser);
+        connectionForm.addRow(3, label("password"), pfPassword);
+        connectionForm.add(new HBox(12, btnConnect, lblSettingsStatus), 1, 4);
+        ((HBox) connectionForm.getChildren().getLast()).setAlignment(Pos.CENTER_LEFT);
 
-        // Two groups that wrap onto a second line when the window is too narrow,
-        // instead of truncating labels to "..." (Arabic labels are longer).
-        HBox connectionGroup = new HBox(10,
-                label("host"), tfHost,
-                label("port"), tfPort,
-                btnFind,
-                label("user"), tfUser,
-                pfPassword,
-                btnConnect, lblStatus);
-        HBox settingsGroup = new HBox(10,
-                label("language"), langPicker,
-                label("theme"), themePicker,
-                btnToggleRight);
-        for (HBox group : List.of(connectionGroup, settingsGroup)) {
-            group.setAlignment(Pos.CENTER_LEFT);
-            for (Node n : group.getChildren()) {
-                if (!(n instanceof TextInputControl) && n instanceof Region r) r.setMinWidth(Region.USE_PREF_SIZE);
-            }
-        }
-        FlowPane top = new FlowPane(24, 8, connectionGroup, settingsGroup);
+        GridPane appearanceForm = form();
+        appearanceForm.addRow(0, label("language"), langPicker);
+        appearanceForm.addRow(1, label("theme"), themePicker);
+
+        // ===== Top bar: status, connect/disconnect, panel toggles, settings =====
+        lblStatus.getStyleClass().add("connection-status");
+        lblStatus.setMinWidth(0);
+        Button btnConnection = new Button();
+        btnConnection.textProperty().bind(Bindings.when(connected)
+                .then(I18n.bind("disconnect")).otherwise(I18n.bind("connect")));
+        ToggleButton tgUsers = new ToggleButton();
+        tgUsers.textProperty().bind(I18n.bind("panel_users"));
+        ToggleButton tgTransfers = new ToggleButton();
+        tgTransfers.textProperty().bind(I18n.bind("transfers"));
+        Button btnSettings = new Button();
+        btnSettings.textProperty().bind(Bindings.concat("⚙ ", I18n.bind("settings")));
+        Region topSpacer = new Region();
+        HBox.setHgrow(topSpacer, Priority.ALWAYS);
+        HBox top = new HBox(8, lblStatus, topSpacer, btnConnection, new Separator(Orientation.VERTICAL),
+                tgUsers, tgTransfers, new Separator(Orientation.VERTICAL), btnSettings);
         top.setAlignment(Pos.CENTER_LEFT);
         top.getStyleClass().add("topbar");
+        for (Node n : top.getChildren()) {
+            if (n instanceof ButtonBase b) b.setMinWidth(Region.USE_PREF_SIZE);
+        }
 
         // ===== Left sidebar =====
         TextField tfSearchUsers = new TextField();
@@ -309,32 +329,21 @@ public class ClientApp extends Application {
 
         VBox right = new VBox(10, label("transfers"), transfersTable);
         right.getStyleClass().add("card");
-        right.setPrefWidth(420);
-
-        btnToggleRight.textProperty().bind(Bindings.when(right.visibleProperty())
-                .then(I18n.bind("hide_transfers"))
-                .otherwise(I18n.bind("show_transfers")));
-        btnToggleRight.setOnAction(e -> {
-            boolean show = !right.isVisible();
-            right.setVisible(show);
-            right.setManaged(show);
-        });
+        VBox.setVgrow(transfersTable, Priority.ALWAYS);
+        VBox.setVgrow(usersView, Priority.ALWAYS);
+        VBox.setVgrow(chatList, Priority.ALWAYS);
 
         center.getChildren().addAll(label("send"), composer);
-        // ===== Layout =====
+        // ===== Layout: drag the dividers to resize the side panels; the top bar toggles hide them =====
+        SidePanels panels = new SidePanels(left, center, right, PanelLayout.load(PanelLayout.defaultLocation()));
+        tgUsers.selectedProperty().bindBidirectional(panels.usersShownProperty());
+        tgTransfers.selectedProperty().bindBidirectional(panels.transfersShownProperty());
+        stage.setOnHidden(e -> rememberLayout(panels.current()));
+
         BorderPane root = new BorderPane();
         root.setTop(top);
-
-        // IMPORTANT: لا تمسح الـtopbar عندك، فقط اتركه كما هو.
-        // ضع المحتوى هنا:
-        BorderPane content = new BorderPane();
-        content.setLeft(left);
-        content.setCenter(center);
-        content.setRight(right);
-        BorderPane.setMargin(content, new Insets(12));
-        root.setCenter(content);
-        
-        
+        BorderPane.setMargin(panels.node(), new Insets(12));
+        root.setCenter(panels.node());
 
         // when selecting user => load thread
         usersView.getSelectionModel().selectedItemProperty().addListener((obs, old, selected) -> {
@@ -365,17 +374,23 @@ public class ClientApp extends Application {
             char[] password = pfPassword.getText().toCharArray();
             pfPassword.clear();
 
-            if (conn != null) { // reconnect: drop the old session and its chats first
-                try { conn.close(); } catch (Exception ignored) { }
-                conn = null;
-            }
-            activePeer = null;
-            chatMessages.clear();
-            userItems.clear();
-            userIndex.clear();
-            chatTitle.textProperty().bind(I18n.bind("select_user"));
+            endSession(chatTitle); // reconnect: drop the old session and its chats first
+            // Trust and error dialogs open over the settings window, where the user is.
+            connectInBackground(settings.stage(), host, port, user, password, btnConnect, tfUser, lblStatus);
+        });
 
-            connectInBackground(stage, host, port, user, password, btnConnect, tfUser, lblStatus);
+        // Not connected: the button opens the Connection tab (the password is needed there).
+        btnConnection.setOnAction(a -> {
+            if (connected.get()) {
+                endSession(chatTitle);
+                setStatus(lblStatus, "status_not_connected");
+            } else {
+                openConnectionSettings(pfPassword);
+            }
+        });
+        btnSettings.setOnAction(a -> {
+            if (connected.get()) settings.showAppearance();
+            else openConnectionSettings(pfPassword);
         });
 
         btnRefreshUsers.setOnAction(a -> {
@@ -397,10 +412,54 @@ public class ClientApp extends Application {
             stage.getIcons().add(new Image(getClass().getResource("/icons/client-" + size + ".png").toExternalForm()));
         }
         stage.setScene(scene);
+        settings = new SettingsWindow(stage, connectionForm, appearanceForm,
+                getClass().getResource("/styles/app.css").toExternalForm());
         stage.show();
+        // Nobody is connected at start: show the Connection tab right away.
+        settings.showConnection();
         // A returning user only needs the password. On a first start keep the field unfocused,
         // so its prompt (which explains how new accounts work) stays visible.
         if (!last.equals(LastLogin.DEFAULT)) pfPassword.requestFocus();
+    }
+
+    private void openConnectionSettings(PasswordField pfPassword) {
+        settings.showConnection();
+        pfPassword.requestFocus();
+    }
+
+    /** Closes the current connection (if any) and clears what it showed. */
+    private void endSession(Label chatTitle) {
+        if (conn != null) {
+            try { conn.close(); } catch (Exception ignored) { }
+            conn = null;
+        }
+        connected.set(false);
+        activePeer = null;
+        chatMessages.clear();
+        userItems.clear();
+        userIndex.clear();
+        chatTitle.textProperty().bind(I18n.bind("select_user"));
+    }
+
+    private static GridPane form() {
+        GridPane g = new GridPane();
+        g.setHgap(12);
+        g.setVgap(12);
+        ColumnConstraints labels = new ColumnConstraints();
+        labels.setMinWidth(Region.USE_PREF_SIZE); // never "Passw..." (Arabic labels are longer)
+        ColumnConstraints fields = new ColumnConstraints();
+        fields.setHgrow(Priority.ALWAYS);
+        g.getColumnConstraints().addAll(labels, fields);
+        return g;
+    }
+
+    /** Saves the panel widths and which panels are shown. A failure only loses the convenience. */
+    private static void rememberLayout(PanelLayout layout) {
+        try {
+            layout.save(PanelLayout.defaultLocation());
+        } catch (IOException | RuntimeException e) {
+            System.err.println("Could not save the panel layout: " + e);
+        }
     }
 
     private void chooseAndDownload(Stage stage, String messageId, String displayName) {
@@ -671,8 +730,10 @@ public class ClientApp extends Application {
     /** Wires a freshly logged-in connection to the UI, then starts it. Runs on the FX thread. */
     private void attachConnection(ClientConnection c, TextField tfUser, Label lblStatus) {
         conn = c;
+        connected.set(true);
         tfUser.setText(c.getUsername());
         setStatus(lblStatus, "status_connected", c.getUsername());
+        settings.hide(); // back to the chats
 
         // `conn != c` guards ignore late callbacks from a connection that was replaced by a reconnect.
         c.setOnError(err -> {

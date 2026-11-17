@@ -142,3 +142,24 @@
     -fx-font-size: 11px;
     -fx-font-weight: 800;
 }
+/* Three resizable columns: the dividers are the gaps between the cards, and light up on hover */
+.panels {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+    -fx-padding: 0;
+}
+
+.panels > .split-pane-divider {
+    -fx-background-color: transparent;
+    -fx-padding: 0 5;
+}
+
+.panels > .split-pane-divider:hover,
+.panels > .split-pane-divider:pressed {
+    -fx-background-color: -color-accent-muted;
+    -fx-background-radius: 4;
+}
+
+.connection-status {
+    -fx-font-weight: 600;
+}
