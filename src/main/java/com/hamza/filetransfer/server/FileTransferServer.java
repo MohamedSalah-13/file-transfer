@@ -110,8 +110,23 @@ public class FileTransferServer {
             ((SSLSocket) socket).startHandshake();
             Object lock = new Object();
 
-            // ===== Handshake =====
+            // ===== Version =====
             String cmd = in.readUTF();
+            if (Protocol.CONNECT.equals(cmd)) {
+                int clientVersion = in.readInt();
+                if (clientVersion != Protocol.VERSION) {
+                    authFailed(out, lock, ErrorCode.VERSION_MISMATCH,
+                            String.valueOf(Protocol.VERSION), String.valueOf(clientVersion));
+                    return;
+                }
+                cmd = in.readUTF();
+            } else if (Protocol.HELLO.equals(cmd) || Protocol.HELLO_TRANSFER.equals(cmd)) {
+                // a client from before versioning: it can read this error but not the new protocol
+                authFailed(out, lock, ErrorCode.VERSION_MISMATCH, String.valueOf(Protocol.VERSION), "0");
+                return;
+            }
+
+            // ===== Handshake =====
             if (Protocol.HELLO.equals(cmd)) {
                 // CONTROL connection: username + password
                 String requested = SafeNames.normalizeUsername(in.readUTF());

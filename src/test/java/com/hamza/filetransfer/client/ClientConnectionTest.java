@@ -121,6 +121,22 @@ class ClientConnectionTest {
     }
 
     @Test
+    void aServerFromBeforeVersioningIsReportedAsAVersionMismatch() throws Exception {
+        Future<ClientConnection> pending = connectAsync("carol");
+        Peer control = server.next();
+        control.readHello();
+        control.out.writeUTF(Protocol.ERROR); // a 2.0.0 pre-release server does not know CONNECT
+        control.out.writeUTF(ErrorCode.BAD_HANDSHAKE);
+        control.out.writeInt(0);
+        control.out.flush();
+
+        ExecutionException e = assertThrows(ExecutionException.class, () -> pending.get(5, TimeUnit.SECONDS));
+        AppError err = AppError.from(e.getCause());
+        assertEquals(new AppError(ErrorCode.VERSION_MISMATCH, "0", String.valueOf(Protocol.VERSION)), err);
+        assertFalse(I18n.error(err).startsWith(ErrorCode.VERSION_MISMATCH), "translated: " + I18n.error(err));
+    }
+
+    @Test
     void loginErrorsArriveAsTranslatableCodes() throws Exception {
         Future<ClientConnection> pending = connectAsync("carol");
         Peer control = server.next();
@@ -377,13 +393,20 @@ class ClientConnectionTest {
             out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
         }
 
+        void readVersion() throws IOException {
+            assertEquals(Protocol.CONNECT, in.readUTF());
+            assertEquals(Protocol.VERSION, in.readInt());
+        }
+
         void readHello() throws IOException {
+            readVersion();
             assertEquals(Protocol.HELLO, in.readUTF());
             in.readUTF(); // user
             in.readUTF(); // password
         }
 
         void acceptTransferLogin() throws IOException {
+            readVersion();
             assertEquals(Protocol.HELLO_TRANSFER, in.readUTF());
             in.readUTF(); // user
             assertEquals("token-123", in.readUTF());

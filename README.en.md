@@ -78,6 +78,8 @@ The protocol is a simple binary format over `DataInputStream` / `DataOutputStrea
 - **CONTROL**: one per user. It starts with `HELLO user password`, and the server answers `HELLO_OK` with the account's canonical name and a session token. It is used for listing users and conversations, sending text messages and receiving notifications.
 - **TRANSFER**: one extra connection per file upload or download. It starts with `HELLO_TRANSFER user token`. The token is only valid while the CONTROL connection is open.
 
+Both kinds of connection start with `CONNECT <version>` before `HELLO`. If the version differs from the server's `Protocol.VERSION`, the server answers with a `version_mismatch` error that carries both version numbers and closes the connection before any login.
+
 Errors are sent as `ERROR <code> <argCount> <args...>`. The codes are defined in `shared/ErrorCode.java`.
 
 ### Server storage
@@ -103,7 +105,7 @@ server-storage/
 ## Known limitations
 
 - The port (`5000`) and the storage folder are hard-coded.
-- The server and clients should be about the same version, because the protocol has no version number. Since 2.0.0 the connection is encrypted, so it does not work with 1.x servers or clients.
+- The server and the clients must use the same protocol version. If they don't, the server refuses the login with a clear message asking to install the same version on both. Since 2.0.0 the connection is encrypted, so it does not work with 1.x servers or clients.
 - Deleting `server-storage/tls` creates a new certificate, and every client then refuses to connect until each user removes the server's line from `~/.file-transfer/known_servers.properties` and trusts it again.
 
 ## Documentation

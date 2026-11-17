@@ -1,6 +1,19 @@
 package com.hamza.filetransfer.shared;
 
 public final class Protocol {
+    // ===== Version =====
+    // Every socket (CONTROL and TRANSFER) starts with: CONNECT <version:int>, then HELLO or HELLO_TRANSFER
+    // right away (no reply in between). If the version differs, the server answers the login with
+    // AUTH_FAILED version_mismatch <serverVersion> <clientVersion> and closes the socket.
+    // The CONNECT format never changes, so any two versions can always tell each other apart.
+    public static final String CONNECT = "CONNECT";
+    /**
+     * Wire protocol version. Bump it on ANY change to what client and server send each other
+     * (a new field, a new command, a changed order); both sides must have the same value.
+     * 0 means a client or server from before versioning (2.0.0 pre-release and older).
+     */
+    public static final int VERSION = 1;
+
     // ===== Handshake =====
     // CONTROL login:  HELLO <username> <password>
     //   -> HELLO_OK <canonicalUsername> <sessionToken> | AUTH_FAILED <error> | ERROR <error>

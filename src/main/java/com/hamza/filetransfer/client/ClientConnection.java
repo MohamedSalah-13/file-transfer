@@ -104,8 +104,9 @@ public class ClientConnection implements Closeable {
             this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
             this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
 
-            // HELLO <username> <password>
+            // CONNECT <version>, HELLO <username> <password>
             synchronized (writeLock) {
+                writeVersion(out);
                 out.writeUTF(Protocol.HELLO);
                 out.writeUTF(username);
                 out.writeUTF(new String(password));
@@ -117,7 +118,7 @@ public class ClientConnection implements Closeable {
                 throw new AppException(AppError.ALREADY_ONLINE);
             }
             if (Protocol.AUTH_FAILED.equals(resp) || Protocol.ERROR.equals(resp)) {
-                throw new AppException(AppError.read(in));
+                throw new AppException(loginError(AppError.read(in)));
             }
             if (!Protocol.HELLO_OK.equals(resp)) {
                 throw new AppException(AppError.PROTOCOL_ERROR, resp);
@@ -132,6 +133,23 @@ public class ClientConnection implements Closeable {
         } finally {
             Arrays.fill(password, '\0');
         }
+    }
+
+    /** First thing on every socket, before HELLO / HELLO_TRANSFER (see {@link Protocol#CONNECT}). */
+    private static void writeVersion(DataOutputStream out) throws IOException {
+        out.writeUTF(Protocol.CONNECT);
+        out.writeInt(Protocol.VERSION);
+    }
+
+    /**
+     * A server from before versioning doesn't know CONNECT and answers bad_handshake:
+     * report that as a version mismatch (server version 0) so the user knows what to do.
+     */
+    private static AppError loginError(AppError e) {
+        if (ErrorCode.BAD_HANDSHAKE.equals(e.code())) {
+            return new AppError(ErrorCode.VERSION_MISMATCH, "0", String.valueOf(Protocol.VERSION));
+        }
+        return e;
     }
 
     /**
@@ -382,6 +400,7 @@ public class ClientConnection implements Closeable {
             s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS);
             SSLSocket secured = secure(s); // same pinned certificate as the CONTROL connection
             TransferSocket t = new TransferSocket(secured);
+            writeVersion(t.out);
             t.out.writeUTF(Protocol.HELLO_TRANSFER);
             t.out.writeUTF(username);
             t.out.writeUTF(sessionToken);
@@ -389,7 +408,7 @@ public class ClientConnection implements Closeable {
 
             String reply = t.in.readUTF();
             if (Protocol.AUTH_FAILED.equals(reply) || Protocol.ERROR.equals(reply)) {
-                throw new AppException(AppError.read(t.in));
+                throw new AppException(loginError(AppError.read(t.in)));
             }
             if (!Protocol.HELLO_OK.equals(reply)) throw new AppException(AppError.PROTOCOL_ERROR, reply);
             secured.setSoTimeout(0); // large transfers may pause; no read timeout from here on

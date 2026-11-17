@@ -185,6 +185,7 @@ class FileTransferServerTest {
         ali.readUTF();
 
         Wire transfer = connect();
+        transfer.writeVersion(Protocol.VERSION);
         transfer.out.writeUTF(Protocol.HELLO_TRANSFER);
         transfer.out.writeUTF("ali");
         transfer.out.writeUTF(ali.token);
@@ -229,10 +230,45 @@ class FileTransferServerTest {
     }
 
     @Test
+    void aClientWithAnotherVersionIsRefusedBeforeLogin() throws Exception {
+        Wire w = connect();
+        w.writeVersion(Protocol.VERSION + 1);
+        w.rawHello("newbie", "secret1");
+        assertEquals(Protocol.AUTH_FAILED, w.readUTF());
+        assertEquals(List.of(ErrorCode.VERSION_MISMATCH, String.valueOf(Protocol.VERSION), String.valueOf(Protocol.VERSION + 1)),
+                w.readErrorWithArgs());
+
+        // nothing was registered: the name is still free for another password
+        assertEquals(Protocol.HELLO_OK, connect().hello("newbie", "other-password"));
+    }
+
+    @Test
+    void aClientFromBeforeVersioningGetsAReadableVersionError() throws Exception {
+        Wire w = connect();
+        w.rawHello("old", "secret1"); // what a 2.0.0 pre-release client sends
+        assertEquals(Protocol.AUTH_FAILED, w.readUTF());
+        assertEquals(List.of(ErrorCode.VERSION_MISMATCH, String.valueOf(Protocol.VERSION), "0"), w.readErrorWithArgs());
+    }
+
+    @Test
+    void transferSocketsCheckTheVersionToo() throws Exception {
+        Wire ali = login("ali", "secret1");
+        Wire transfer = connect();
+        transfer.writeVersion(Protocol.VERSION + 1);
+        transfer.out.writeUTF(Protocol.HELLO_TRANSFER);
+        transfer.out.writeUTF("ali");
+        transfer.out.writeUTF(ali.token);
+        transfer.out.flush();
+        assertEquals(Protocol.AUTH_FAILED, transfer.readUTF());
+        assertEquals(ErrorCode.VERSION_MISMATCH, transfer.readErrorWithArgs().getFirst());
+    }
+
+    @Test
     void transferSocketsNeedTheSessionToken() throws Exception {
         login("Ali", "secret1");
 
         Wire transfer = connect();
+        transfer.writeVersion(Protocol.VERSION);
         transfer.out.writeUTF(Protocol.HELLO_TRANSFER);
         transfer.out.writeUTF("Ali");
         transfer.out.writeUTF("guessed-token");
@@ -277,6 +313,7 @@ class FileTransferServerTest {
 
     private Wire transfer(String user, String token) throws Exception {
         Wire w = connect();
+        w.writeVersion(Protocol.VERSION);
         w.out.writeUTF(Protocol.HELLO_TRANSFER);
         w.out.writeUTF(user);
         w.out.writeUTF(token);
@@ -308,17 +345,37 @@ class FileTransferServerTest {
             return in.readUTF();
         }
 
+        void writeVersion(int version) throws IOException {
+            out.writeUTF(Protocol.CONNECT);
+            out.writeInt(version);
+        }
+
         String hello(String user, String password) throws IOException {
-            out.writeUTF(Protocol.HELLO);
-            out.writeUTF(user);
-            out.writeUTF(password);
-            out.flush();
+            writeVersion(Protocol.VERSION);
+            rawHello(user, password);
             String reply = in.readUTF();
             if (Protocol.HELLO_OK.equals(reply)) {
                 in.readUTF(); // canonical name
                 token = in.readUTF();
             }
             return reply;
+        }
+
+        /** HELLO without the CONNECT version step before it. */
+        void rawHello(String user, String password) throws IOException {
+            out.writeUTF(Protocol.HELLO);
+            out.writeUTF(user);
+            out.writeUTF(password);
+            out.flush();
+        }
+
+        /** Reads {@code <code> <argCount> <args...>} and returns code followed by the args. */
+        List<String> readErrorWithArgs() throws IOException {
+            List<String> all = new ArrayList<>();
+            all.add(in.readUTF());
+            int n = in.readInt();
+            for (int i = 0; i < n; i++) all.add(in.readUTF());
+            return all;
         }
 
         /** Reads {@code <code> <argCount> <args...>} and returns the code. */

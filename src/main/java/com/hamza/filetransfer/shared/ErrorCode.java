@@ -10,6 +10,8 @@ public final class ErrorCode {
 
     // ===== Login / handshake =====
     public static final String BAD_HANDSHAKE = "bad_handshake";
+    /** Client and server speak different protocol versions. args: server version, client version */
+    public static final String VERSION_MISMATCH = "version_mismatch";
     /** args: max username length */
     public static final String INVALID_USERNAME = "invalid_username";
     /** args: min length, max length */
