@@ -67,8 +67,12 @@ public class ClientApp extends Application {
     @Override
     public void start(Stage stage) throws Exception {
         knownServers = new KnownServers(KnownServers.defaultLocation());
-        I18n.setLanguage("en"); // Default language
-        ThemeManager.applyTheme(ThemeManager.getThemes().getFirst());
+        Appearance look = Appearance.load(Appearance.defaultLocation());
+        ThemeManager.ThemeOption startTheme = ThemeManager.getThemes().stream()
+                .filter(t -> t.name().equals(look.theme())).findFirst()
+                .orElse(ThemeManager.getThemes().getFirst());
+        I18n.setLanguage(look.language());
+        ThemeManager.applyTheme(startTheme);
 
         LastLogin last = LastLogin.load(LastLogin.defaultLocation());
         TextField tfHost = new TextField(last.host());
@@ -86,19 +90,23 @@ public class ClientApp extends Application {
 
         // Language Picker (language names are shown in their own language on purpose)
         ComboBox<String> langPicker = new ComboBox<>(FXCollections.observableArrayList("English", "العربية"));
-        langPicker.getSelectionModel().selectFirst();
+        langPicker.getSelectionModel().select("ar".equals(look.language()) ? "العربية" : "English");
+
+        // Theme Picker
+        ComboBox<ThemeManager.ThemeOption> themePicker = new ComboBox<>(ThemeManager.getThemes());
+        themePicker.getSelectionModel().select(startTheme);
+
+        // Handlers are set after the start values are selected, so selecting them saves nothing.
         langPicker.setOnAction(e -> {
             String selected = langPicker.getValue();
             I18n.setLanguage(selected.equals("العربية") ? "ar" : "en");
             applyOrientation(stage.getScene().getRoot());
             if (chatListRef != null) chatListRef.refresh(); // bubbles read translations when rendered
+            rememberAppearance(langPicker, themePicker);
         });
-
-        // Theme Picker
-        ComboBox<ThemeManager.ThemeOption> themePicker = new ComboBox<>(ThemeManager.getThemes());
-        themePicker.getSelectionModel().selectFirst();
         themePicker.setOnAction(e -> {
             ThemeManager.applyTheme(themePicker.getValue());
+            rememberAppearance(langPicker, themePicker);
             // Re-apply custom app styles to ensure they override theme defaults if necessary
             String css = getClass().getResource("/styles/app.css").toExternalForm();
             if (stage.getScene() != null && !stage.getScene().getStylesheets().contains(css)) {
@@ -472,6 +480,17 @@ public class ClientApp extends Application {
             login.save(LastLogin.defaultLocation());
         } catch (IOException | RuntimeException e) {
             System.err.println("Could not save the last login: " + e);
+        }
+    }
+
+    /** Saves the picked language and theme for the next start. A failure only loses the convenience. */
+    private static void rememberAppearance(ComboBox<String> langPicker, ComboBox<ThemeManager.ThemeOption> themePicker) {
+        if (langPicker.getValue() == null || themePicker.getValue() == null) return;
+        String language = langPicker.getValue().equals("العربية") ? "ar" : "en";
+        try {
+            new Appearance(language, themePicker.getValue().name()).save(Appearance.defaultLocation());
+        } catch (IOException | RuntimeException e) {
+            System.err.println("Could not save the language and theme: " + e);
         }
     }
 
