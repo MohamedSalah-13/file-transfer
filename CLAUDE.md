@@ -17,7 +17,10 @@ Windows (PowerShell); use `./mvnw` on Unix shells.
 .\mvnw.cmd -Pclient javafx:run     # run a client (start several in separate terminals)
 .\mvnw.cmd test                    # run all tests
 .\mvnw.cmd test -Dtest=FileTransferServerTest   # one test class
+.\packaging\package.ps1          # Windows installer -> target\installer (needs WiX 3.x; -Type app-image needs nothing)
 ```
+
+- `packaging/package.ps1`: `javafx:jlink` makes the runtime image in `target/app` (it keeps `bin/keytool.exe`, which jpackage's own jlink step would strip), then `jpackage --runtime-image` makes the installer. The main launcher "File Transfer" is the client; `packaging/server-launcher.properties` adds "File Transfer Server" with `-Dfiletransfer.packaged=true`, which makes `ServerConfig.workDir()` use `~/.file-transfer/server` instead of the (unwritable, replaced on upgrade) install folder. Keep `--win-upgrade-uuid` unchanged so new versions upgrade in place.
 
 - The `server` / `client` Maven profiles only switch `mainClass` (`server.ServerLauncher` / `client.ClientLauncher`). Without a profile `javafx:run` starts the server.
 - Tests (JUnit 5, Surefire 3.x) live in `src/test/java` in the same packages as the code, so Surefire patches them into the JPMS module and they can use package-private members.
@@ -69,4 +72,4 @@ users/<user>/threads/<peer>/<messageId>.meta  # chat history, one Properties fil
 ### Known issues
 - `messages*.properties` must stay UTF-8: Java 9+ reads resource bundles as UTF-8. The Arabic file was once saved with a non-UTF-8 encoding, which turned every character into `?`. Client UI text goes through `client.I18n` (`I18n.bind(key)` for live bindings that follow language switches); add new strings to all three `messages*.properties` files.
 - Server port and storage come from `ServerConfig.load`: `--port`/`--storage` args, then `server.properties` in the working directory (git-ignored), then 5000 / `server-storage`. `FileTransferServer.startAsync` binds before returning, so a busy port throws `BindException` and `ServerApp` shows it. The client fills host, port and user from `LastLogin` (`~/.file-transfer/client.properties`, saved after each successful login with the canonical name, never the password); a missing or broken file gives the defaults in `LastLogin.DEFAULT` (127.0.0.1:5000, user1). The same file keeps the picked language and theme (`Appearance`, saved when a picker changes). Both go through `PrefsFile.update`, which re-reads the file and replaces only its own keys, so neither save drops the other.
-- The server certificate is created with `keytool` from `java.home/bin`. A jpackage/jlink runtime built with `--strip-native-commands` has no `keytool`, so a packaged server would need the certificate created another way.
+- The server certificate is created with `keytool` from `java.home/bin`. A jpackage/jlink runtime built with `--strip-native-commands` (jpackage's default) has no `keytool`; `package.ps1` avoids that by building the runtime with `javafx:jlink` and checks that `keytool.exe` is there.

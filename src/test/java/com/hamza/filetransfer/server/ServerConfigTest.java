@@ -56,6 +56,17 @@ class ServerConfigTest {
         assertTrue(e.getMessage().contains("server.properties"), e.getMessage());
     }
 
+    @Test
+    void theInstalledServerKeepsItsDataInTheUserHome() throws Exception {
+        Path cwd = work.resolve("Program Files").resolve("File Transfer");
+        Path home = work.resolve("home");
+        assertEquals(cwd, ServerConfig.workDir(false, cwd, home), "run from source: the working directory");
+        Path installed = ServerConfig.workDir(true, cwd, home);
+        assertEquals(home.resolve(".file-transfer").resolve("server"), installed);
+        assertEquals(installed.resolve("server-storage").toAbsolutePath().normalize(),
+                ServerConfig.load(List.of(), installed).storageDir());
+    }
+
     private void assertMessage(List<String> args, String expected) {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> ServerConfig.load(args, work));
         assertTrue(e.getMessage().contains(expected), e.getMessage());

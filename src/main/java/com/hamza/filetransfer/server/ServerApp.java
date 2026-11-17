@@ -90,7 +90,7 @@ public class ServerApp extends Application {
         Thread starter = new Thread(() -> {
             ServerConfig config = null;
             try {
-                config = ServerConfig.load(args, Path.of("").toAbsolutePath());
+                config = ServerConfig.load(args, ServerConfig.workDir());
                 AccountStore accounts = new AccountStore(config.accountsFile());
                 ServerTls tls = ServerTls.loadOrCreate(config.tlsDir());
 

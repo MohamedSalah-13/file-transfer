@@ -63,6 +63,17 @@ Command-line options win over the file, and the file wins over the defaults (`50
 
 Full details (client fields, accounts, network and firewall settings) are in [docs/RUNNING.md](docs/RUNNING.md) (Arabic).
 
+### Windows installer
+
+To give the app to people who don't have Java:
+
+```powershell
+.\packaging\package.ps1                  # target\installer\File Transfer-<version>.exe
+.\packaging\package.ps1 -Type app-image  # a folder to zip and run without installing
+```
+
+The installer has its own Java runtime and needs no admin rights. It adds two Start menu shortcuts: **File Transfer** (the client) and **File Transfer Server**. The installed server keeps its data and `server.properties` in `%USERPROFILE%\.file-transfer\server`, so uninstalling or upgrading keeps the accounts, files and certificate. Building it needs JDK 17+ (for `jpackage`) and, for the `.exe`, the [WiX Toolset](https://wixtoolset.org/) 3.x.
+
 ## Tests
 
 ```powershell

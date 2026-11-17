@@ -63,6 +63,17 @@ storage=D:/ft-data
 
 التفاصيل الكاملة (خانات واجهة العميل، الحسابات، إعدادات الشبكة والجدار الناري) في [docs/RUNNING.md](docs/RUNNING.md).
 
+### ملف التثبيت (Windows)
+
+لتسليم البرنامج لأجهزة مافيهاش Java:
+
+```powershell
+.\packaging\package.ps1                  # target\installer\File Transfer-<version>.exe
+.\packaging\package.ps1 -Type app-image  # مجلد يتضغط ويشتغل من غير تثبيت
+```
+
+ملف التثبيت فيه Java الخاصة بيه ومش محتاج صلاحيات مدير. بيضيف اختصارين في قائمة Start: **File Transfer** (العميل) و **File Transfer Server**. السيرفر المثبّت بيحفظ بياناته و `server.properties` في `%USERPROFILE%\.file-transfer\server`، فإلغاء التثبيت أو الترقية ما بيمسحش الحسابات ولا الملفات ولا الشهادة. بناؤه محتاج JDK 17 أو أحدث (عشان `jpackage`)، و [WiX Toolset](https://wixtoolset.org/) 3.x لملف الـ `.exe`.
+
 ## الاختبارات
 
 ```powershell

@@ -90,6 +90,25 @@ public record ServerConfig(int port, Path storageDir) {
         return new ServerConfig(portNumber, workDir.resolve(folder));
     }
 
+    /** Set by the installed app's launcher ({@code packaging/package.ps1}). */
+    public static final String PACKAGED_PROPERTY = "filetransfer.packaged";
+
+    /**
+     * The folder {@link #load} reads {@value #CONFIG_FILE} from and puts relative storage in.
+     * Run from source it is the working directory. The installed app's working directory is its
+     * install folder (maybe not writable, and replaced on upgrade or removed on uninstall), so it
+     * uses {@code ~/.file-transfer/server} instead.
+     */
+    public static Path workDir(boolean packaged, Path currentDir, Path userHome) {
+        return packaged ? userHome.resolve(".file-transfer").resolve("server") : currentDir;
+    }
+
+    /** {@link #workDir(boolean, Path, Path)} for this process. */
+    public static Path workDir() {
+        return workDir(Boolean.getBoolean(PACKAGED_PROPERTY), Path.of("").toAbsolutePath(),
+                Path.of(System.getProperty("user.home")));
+    }
+
     public Path accountsFile() {
         return storageDir.resolve("accounts.properties");
     }
