@@ -16,6 +16,7 @@ A JavaFX app for sending files and chatting between computers on a local network
 - Limits: **200 MB** per file and **2000 characters** per text message.
 
 ### Interface
+- **Find the server automatically**: a "Find servers" button lists the servers on the same network and fills in the address and port with one click.
 - **Smart user list**: unread counts, a preview of the last message, search, and sorting by unread first, then by latest activity.
 - **Readable times** in chat bubbles and in the sidebar: just the time for today's messages, then "Yesterday", then the date. Hovering over a message's time shows the full date, and times update on their own after midnight.
 - **Arabic and English UI**, switchable while the app is running, with right-to-left layout for Arabic.
@@ -81,7 +82,7 @@ Full details (client fields, accounts, network and firewall settings) are in [do
 
 ```
 src/main/java/com/hamza/filetransfer/
-├── shared/   # Protocol (wire commands), ErrorCode (error codes), Limits, SafeNames (name and path checks)
+├── shared/   # Protocol (wire commands), ErrorCode (error codes), Limits, SafeNames (name and path checks), Discovery (LAN search)
 ├── server/   # FileTransferServer (socket logic), AccountStore (accounts), ServerApp (UI)
 └── client/   # ClientConnection (networking), ClientApp (the whole client UI, built in code), I18n (translations)
 ```
@@ -98,6 +99,8 @@ The protocol is a simple binary format over `DataInputStream` / `DataOutputStrea
 Both kinds of connection start with `CONNECT <version>` before `HELLO`. If the version differs from the server's `Protocol.VERSION`, the server answers with a `version_mismatch` error that carries both version numbers and closes the connection before any login.
 
 Errors are sent as `ERROR <code> <argCount> <args...>`. The codes are defined in `shared/ErrorCode.java`.
+
+**LAN discovery (UDP 5001):** the client broadcasts a query, and each server answers with its name and TCP port. An answer is only an address: the connection itself still goes through the certificate fingerprint check, so a fake server can't get in. A server never answers with more bytes than the query, so it can't be used to flood another machine.
 
 ### Server storage
 

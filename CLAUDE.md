@@ -29,7 +29,8 @@ Windows (PowerShell); use `./mvnw` on Unix shells.
 ## Architecture
 
 Packages under `src/main/java/com/hamza/filetransfer/`:
-- `shared/`: wire constants (`Protocol`), limits (`Limits`: 200 MB max file, 64 KB buffer), and `SafeNames` (validation/sanitizing for anything that becomes a path).
+- `shared/`: wire constants (`Protocol`), limits (`Limits`: 200 MB max file, 64 KB buffer), `SafeNames` (validation/sanitizing for anything that becomes a path), and `Discovery` (LAN discovery datagrams).
+- **LAN discovery (UDP `Discovery.PORT` = 5001):** `client.ServerFinder` broadcasts a query (to 255.255.255.255, each interface's broadcast address and 127.0.0.1) and `server.DiscoveryResponder` (started by `ServerApp`, optional) answers with its protocol version, TCP port and host name. The responder uses `SO_REUSEADDR` so several servers on one machine can all answer, and never sends a reply larger than the query (no amplification). `ServerFinder.merge` folds the answers a server sends from each of its networks into one row, shown as 127.0.0.1 when the server is on this computer. An answer is only a hint: TLS pinning still decides trust.
 - `server/`: `FileTransferServer` (socket logic, no JavaFX UI code), `AccountStore` (passwords), `ServerApp` (table of `TransferSession`s). The server updates a `TransferSession` from socket threads; `ServerApp` calls `deliverUpdatesOn(Platform::runLater)` so its properties change only on the FX thread (progress updates are coalesced).
 - `client/`: `ClientConnection` (socket logic + callbacks) and `ClientApp` (the whole client UI in one class, built in code — no FXML).
 

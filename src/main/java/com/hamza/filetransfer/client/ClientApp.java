@@ -22,6 +22,8 @@ import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
+import com.hamza.filetransfer.shared.Discovery;
+
 import java.nio.file.Path;
 import java.util.*;
 
@@ -74,6 +76,9 @@ public class ClientApp extends Application {
         pfPassword.promptTextProperty().bind(I18n.bind("password_prompt"));
         Button btnConnect = new Button();
         btnConnect.textProperty().bind(I18n.bind("connect"));
+        Button btnFind = new Button();
+        btnFind.textProperty().bind(I18n.bind("find_servers"));
+        btnFind.setOnAction(e -> findServers(stage, btnFind, tfHost, tfPort, pfPassword));
 
         Label lblStatus = label("status_not_connected");
 
@@ -111,6 +116,7 @@ public class ClientApp extends Application {
         HBox connectionGroup = new HBox(10,
                 label("host"), tfHost,
                 label("port"), tfPort,
+                btnFind,
                 label("user"), tfUser,
                 pfPassword,
                 btnConnect, lblStatus);
@@ -525,11 +531,103 @@ public class ClientApp extends Application {
         }
     }
 
-    private static Optional<ButtonType> showLocalized(Stage owner, Alert alert) {
-        alert.initOwner(owner);
-        alert.getDialogPane().setNodeOrientation(
+    private static <T> Optional<T> showLocalized(Stage owner, Dialog<T> dialog) {
+        dialog.initOwner(owner);
+        dialog.getDialogPane().setNodeOrientation(
                 I18n.isRightToLeft() ? NodeOrientation.RIGHT_TO_LEFT : NodeOrientation.LEFT_TO_RIGHT);
-        return alert.showAndWait();
+        return dialog.showAndWait();
+    }
+
+    /** How long "Find servers" waits for answers. */
+    private static final java.time.Duration FIND_WAIT = java.time.Duration.ofMillis(1500);
+
+    /** Asks the LAN for servers off the FX thread, then lets the user pick one to fill host and port. */
+    private void findServers(Stage stage, Button btnFind, TextField tfHost, TextField tfPort, PasswordField pfPassword) {
+        btnFind.setDisable(true);
+        btnFind.textProperty().bind(I18n.bind("find_searching"));
+        Thread t = new Thread(() -> {
+            List<Discovery.Found> found = List.of();
+            AppError failure = null;
+            try {
+                found = ServerFinder.find(Discovery.PORT, FIND_WAIT);
+            } catch (Exception e) {
+                failure = AppError.from(e);
+            }
+            List<Discovery.Found> result = found;
+            AppError error = failure;
+            Platform.runLater(() -> {
+                btnFind.textProperty().bind(I18n.bind("find_servers"));
+                btnFind.setDisable(false);
+                pickServer(stage, result, error).ifPresent(f -> {
+                    tfHost.setText(f.host());
+                    tfPort.setText(String.valueOf(f.port()));
+                    pfPassword.requestFocus();
+                });
+            });
+        }, "find-servers");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private Optional<Discovery.Found> pickServer(Stage stage, List<Discovery.Found> found, AppError error) {
+        Dialog<Discovery.Found> dialog = new Dialog<>();
+        dialog.setTitle(I18n.get("find_title"));
+        ButtonType use = new ButtonType(I18n.get("find_use"), ButtonBar.ButtonData.OK_DONE);
+        ButtonType close = new ButtonType(I18n.get("close"), ButtonBar.ButtonData.CANCEL_CLOSE);
+
+        if (found.isEmpty()) {
+            dialog.setHeaderText(I18n.get("find_none_header"));
+            Label why = new Label(error != null
+                    ? I18n.get("find_failed", I18n.error(error))
+                    : I18n.get("find_none", String.valueOf(Discovery.PORT)));
+            why.setWrapText(true);
+            dialog.getDialogPane().setContent(why);
+            dialog.getDialogPane().getButtonTypes().add(close);
+            dialog.getDialogPane().setPrefWidth(480);
+            showLocalized(stage, dialog);
+            return Optional.empty();
+        }
+
+        dialog.setHeaderText(I18n.get("find_header", String.valueOf(found.size())));
+        ListView<Discovery.Found> list = new ListView<>(FXCollections.observableArrayList(found));
+        list.setPrefHeight(Math.min(6, found.size()) * 58 + 4);
+        list.setCellFactory(v -> new ListCell<>() {
+            @Override
+            protected void updateItem(Discovery.Found f, boolean empty) {
+                super.updateItem(f, empty);
+                if (empty || f == null) {
+                    setGraphic(null);
+                    return;
+                }
+                // Separate labels so the address stays left-to-right inside an Arabic layout.
+                Label name = new Label(f.name());
+                name.setStyle("-fx-font-weight: bold;");
+                Label address = new Label(f.host() + ":" + f.port());
+                Label where = ServerFinder.isLoopback(f.host()) ? new Label(I18n.get("find_this_computer")) : null;
+                address.setNodeOrientation(NodeOrientation.LEFT_TO_RIGHT);
+                VBox box = new VBox(2, name, where == null ? address : new HBox(8, address, where));
+                if (!f.sameVersion()) {
+                    Label warn = new Label(I18n.get("find_other_version"));
+                    warn.getStyleClass().add("danger");
+                    warn.setStyle("-fx-text-fill: -color-danger-fg;");
+                    box.getChildren().add(warn);
+                }
+                setGraphic(box);
+            }
+        });
+        list.getSelectionModel().selectFirst();
+        dialog.getDialogPane().setContent(list);
+        dialog.getDialogPane().getButtonTypes().addAll(use, close);
+        dialog.getDialogPane().setPrefWidth(480);
+        dialog.getDialogPane().lookupButton(use).disableProperty()
+                .bind(list.getSelectionModel().selectedItemProperty().isNull());
+        list.setOnMouseClicked(e -> {
+            if (e.getClickCount() == 2 && list.getSelectionModel().getSelectedItem() != null) {
+                ((Button) dialog.getDialogPane().lookupButton(use)).fire();
+            }
+        });
+        dialog.setResultConverter(b -> b == use ? list.getSelectionModel().getSelectedItem() : null);
+        return showLocalized(stage, dialog);
     }
 
     /** Wires a freshly logged-in connection to the UI, then starts it. Runs on the FX thread. */

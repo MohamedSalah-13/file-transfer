@@ -16,13 +16,17 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
+import com.hamza.filetransfer.shared.Discovery;
+
 import java.net.BindException;
+import java.net.InetAddress;
 import java.nio.file.Path;
 import java.util.List;
 
 public class ServerApp extends Application {
 
     private final ObservableList<TransferSession> sessions = FXCollections.observableArrayList();
+    private DiscoveryResponder discovery; // kept open for the life of the app
 
     @Override
     public void start(Stage stage) {
@@ -102,9 +106,11 @@ public class ServerApp extends Application {
                         }
                 ).startAsync();
 
+                String discovery = startDiscovery(config.port());
                 ServerConfig running = config;
                 Platform.runLater(() -> {
-                    info.setText("Server running on port " + running.port() + " (TLS). Storage: " + running.storageDir());
+                    info.setText("Server running on port " + running.port() + " (TLS). Storage: " + running.storageDir()
+                            + System.lineSeparator() + discovery);
                     fingerprint.setText(tls.fingerprint());
                 });
             } catch (Exception e) {
@@ -114,6 +120,24 @@ public class ServerApp extends Application {
         }, "server-start");
         starter.setDaemon(true);
         starter.start();
+    }
+
+    /** Answers "Find servers" from clients. Optional: the server works without it. Returns a status line. */
+    private String startDiscovery(int tcpPort) {
+        try {
+            discovery = new DiscoveryResponder(Discovery.PORT, tcpPort, serverName());
+            return "LAN discovery: on (UDP " + Discovery.PORT + "). Clients can use \"Find servers\".";
+        } catch (Exception e) {
+            return "LAN discovery: off (" + e.getMessage() + "). Clients must type this computer's address.";
+        }
+    }
+
+    private static String serverName() {
+        try {
+            return InetAddress.getLocalHost().getHostName();
+        } catch (Exception e) {
+            return "File Transfer server";
+        }
     }
 
     /** A message that says what to change, for the errors people actually hit. */
