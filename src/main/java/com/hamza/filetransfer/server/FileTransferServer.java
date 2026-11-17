@@ -8,6 +8,7 @@ import com.hamza.filetransfer.shared.SafeNames;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.MessageDigest;
@@ -15,11 +16,34 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
 
 public class FileTransferServer {
 
-    public record OnlineClient(String username, String token, DataOutputStream out, Object lock) {}
+    /**
+     * A logged-in CONTROL connection. Notifications for this user are written by its own
+     * {@code pusher} thread, so a slow or dead recipient never blocks or breaks the sender.
+     */
+    public record OnlineClient(String username, String token, Socket socket, DataOutputStream out, Object lock,
+                               ExecutorService pusher) {
+
+        /** Drops the connection; its handler thread then sees the closed socket and cleans up. */
+        void disconnect() {
+            pusher.shutdownNow();
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    @FunctionalInterface
+    private interface PushWriter {
+        void write(DataOutputStream out) throws IOException;
+    }
 
     private final int port;
     private final Path usersDir;
@@ -65,6 +89,7 @@ public class FileTransferServer {
              DataInputStream in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
              DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()))) {
 
+            socket.setKeepAlive(true); // let the OS notice peers that vanished without closing
             Object lock = new Object();
 
             // ===== Handshake =====
@@ -101,23 +126,19 @@ public class FileTransferServer {
                 username = auth.username();
                 Files.createDirectories(userInboxDir(username));
 
-                // Only one CONTROL connection per user
-                OnlineClient candidate = new OnlineClient(username, newToken(), out, lock);
-                if (online.putIfAbsent(username, candidate) != null) {
-                    synchronized (lock) {
-                        out.writeUTF(Protocol.HELLO_TAKEN);
-                        out.flush();
-                    }
-                    return;
-                }
-                me = candidate;
-
-                synchronized (lock) {
+                // Only one CONTROL connection per user: a new login (with the right password) replaces
+                // the old one. Otherwise a client that vanished without closing its socket (Wi-Fi drop,
+                // sleep) would keep the name "online" and lock its owner out.
+                me = new OnlineClient(username, newToken(), socket, out, lock, newPusher(username));
+                OnlineClient previous;
+                synchronized (lock) { // pushes to us wait for this lock, so HELLO_OK is always first
+                    previous = online.put(username, me);
                     out.writeUTF(Protocol.HELLO_OK);
                     out.writeUTF(username);
                     out.writeUTF(me.token());
                     out.flush();
                 }
+                if (previous != null) previous.disconnect();
 
             } else if (Protocol.HELLO_TRANSFER.equals(cmd)) {
                 // TRANSFER connection: must present the token of a live CONTROL session
@@ -183,14 +204,46 @@ public class FileTransferServer {
                 }
             }
 
-        } catch (EOFException ignored) {
-            // client disconnected
+        } catch (EOFException | SocketException ignored) {
+            // client disconnected, or its socket was closed (replaced by a new login / dead push target)
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
             if (me != null) {
                 online.remove(me.username(), me); // only remove our own entry
+                me.pusher().shutdownNow();
             }
+        }
+    }
+
+    private static ExecutorService newPusher(String username) {
+        return Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "push-" + username);
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    /**
+     * Sends a notification to {@code toUser} if online, without blocking the caller.
+     * A write failure means the recipient's socket is dead, so that connection is dropped.
+     */
+    private void push(String toUser, PushWriter writer) {
+        OnlineClient target = online.get(toUser);
+        if (target == null) return;
+        try {
+            target.pusher().execute(() -> {
+                try {
+                    synchronized (target.lock()) {
+                        writer.write(target.out());
+                        target.out().flush();
+                    }
+                } catch (IOException e) {
+                    target.disconnect();
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+            // the recipient is disconnecting
         }
     }
 
@@ -200,11 +253,14 @@ public class FileTransferServer {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
     }
 
-    /** Validates a peer username from the client; returns null if invalid or no such account. */
+    /**
+     * Validates a peer username from the client and returns the account's canonical spelling
+     * (so "ALI" and "Ali" use the same folders and online entry); null if invalid or no such account.
+     */
     private String knownPeer(String raw) {
         String peer = SafeNames.normalizeUsername(raw);
-        if (!SafeNames.isValidUsername(peer) || !accounts.exists(peer)) return null;
-        return peer;
+        if (!SafeNames.isValidUsername(peer)) return null;
+        return accounts.canonicalName(peer);
     }
 
     private void handleListUsers(DataOutputStream out, Object lock) throws IOException {
@@ -229,9 +285,9 @@ public class FileTransferServer {
             throw new IOException("Rejected oversized file");
         }
 
-        if (toUser == null) {
+        if (toUser == null || toUser.equals(fromUser)) {
             discard(in, fileSize); // keep the stream in sync, then report
-            sendError(out, lock, ErrorCode.UNKNOWN_RECIPIENT);
+            sendError(out, lock, toUser == null ? ErrorCode.UNKNOWN_RECIPIENT : ErrorCode.SELF_RECIPIENT);
             return;
         }
 
@@ -295,18 +351,14 @@ public class FileTransferServer {
             out.flush();
         }
 
-        OnlineClient targetControl = online.get(toUser);
-        if (targetControl != null) {
-            synchronized (targetControl.lock()) {
-                targetControl.out().writeUTF(Protocol.INCOMING_FILE);
-                targetControl.out().writeUTF(messageId);
-                targetControl.out().writeUTF(fromUser);
-                targetControl.out().writeUTF(fileName);
-                targetControl.out().writeLong(fileSize);
-                targetControl.out().writeUTF(ts.toString());
-                targetControl.out().flush();
-            }
-        }
+        push(toUser, o -> {
+            o.writeUTF(Protocol.INCOMING_FILE);
+            o.writeUTF(messageId);
+            o.writeUTF(fromUser);
+            o.writeUTF(fileName);
+            o.writeLong(fileSize);
+            o.writeUTF(ts.toString());
+        });
 
         session.setStatus("DONE");
     }
@@ -327,6 +379,11 @@ public class FileTransferServer {
 
         if (toUser == null) {
             sendError(out, lock, ErrorCode.UNKNOWN_RECIPIENT);
+            return;
+        }
+        if (toUser.equals(fromUser)) {
+            // Both copies (IN and OUT) would be the same file in threads/<me>/<me>/.
+            sendError(out, lock, ErrorCode.SELF_RECIPIENT);
             return;
         }
 
@@ -357,16 +414,12 @@ public class FileTransferServer {
             out.flush();
         }
 
-        OnlineClient targetControl = online.get(toUser);
-        if (targetControl != null) {
-            synchronized (targetControl.lock()) {
-                targetControl.out().writeUTF(Protocol.INCOMING_TEXT);
-                targetControl.out().writeUTF(messageId);
-                targetControl.out().writeUTF(fromUser);
-                targetControl.out().writeUTF(ts.toString());
-                targetControl.out().flush();
-            }
-        }
+        push(toUser, o -> {
+            o.writeUTF(Protocol.INCOMING_TEXT);
+            o.writeUTF(messageId);
+            o.writeUTF(fromUser);
+            o.writeUTF(ts.toString());
+        });
     }
 
     private void handleListThread(String username, DataInputStream in, DataOutputStream out, Object lock) throws Exception {

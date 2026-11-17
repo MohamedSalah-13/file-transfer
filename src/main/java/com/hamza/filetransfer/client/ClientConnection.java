@@ -7,6 +7,7 @@ import com.hamza.filetransfer.shared.SafeNames;
 import javafx.application.Platform;
 
 import java.io.*;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -16,6 +17,9 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -43,10 +47,21 @@ public class ClientConnection implements Closeable {
     private Consumer<InboxFile> onIncoming = file -> {
     };
 
-    private Consumer<List<ChatMessage>> onThreadMessages = msgs -> {
+    /** (peer the thread belongs to, its messages). Replies can arrive after the user switched chats. */
+    private BiConsumer<String, List<ChatMessage>> onThreadMessages = (peer, msgs) -> {
     };
-    private Consumer<String> onThreadPeer = peer -> {
-    };
+
+    /**
+     * Small CONTROL requests (list users, list thread...) are written from this thread, never from the
+     * caller's: an upload holds the write lock for its whole duration, and the FX thread must not wait on it.
+     */
+    private final ExecutorService requests = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "client-requests");
+        t.setDaemon(true);
+        return t;
+    });
+
+    private static final int CONNECT_TIMEOUT_MILLIS = 10_000;
 
     private Consumer<IncomingTextEvent> onIncomingText = evt -> {
     };
@@ -54,13 +69,15 @@ public class ClientConnection implements Closeable {
     /**
      * Opens the CONTROL connection and logs in. A new username is registered with this password
      * on first login; afterwards the same password is required.
+     * Blocks on the network: call it off the FX thread. Set the callbacks, then call {@link #start()}.
      */
     public ClientConnection(String host, int port, String username, char[] password) throws Exception {
         this.host = host;
         this.port = port;
 
-        this.socket = new Socket(host, port);
+        this.socket = new Socket();
         try {
+            socket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS);
             this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
             this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
 
@@ -86,11 +103,15 @@ public class ClientConnection implements Closeable {
             this.sessionToken = in.readUTF();
         } catch (Exception e) {
             socket.close();
+            requests.shutdownNow();
             throw e;
         } finally {
             Arrays.fill(password, '\0');
         }
+    }
 
+    /** Starts reading server messages. Call once, after the callbacks are set, so no push is lost. */
+    public void start() {
         Thread listener = new Thread(this::listenLoop, "client-control-listener");
         listener.setDaemon(true);
         listener.start();
@@ -100,12 +121,8 @@ public class ClientConnection implements Closeable {
         this.onIncomingText = onIncomingText;
     }
 
-    public void setOnThreadMessages(Consumer<List<ChatMessage>> onThreadMessages) {
+    public void setOnThreadMessages(BiConsumer<String, List<ChatMessage>> onThreadMessages) {
         this.onThreadMessages = onThreadMessages;
-    }
-
-    public void setOnThreadPeer(Consumer<String> onThreadPeer) {
-        this.onThreadPeer = onThreadPeer;
     }
 
     private void listenLoop() {
@@ -162,10 +179,7 @@ public class ClientConnection implements Closeable {
                         }
                     }
 
-                    Platform.runLater(() -> {
-                        onThreadPeer.accept(peer);
-                        onThreadMessages.accept(msgs);
-                    });
+                    Platform.runLater(() -> onThreadMessages.accept(peer, msgs));
 
                 } else if (Protocol.INCOMING_FILE.equals(type)) {
                     String fileId = in.readUTF();
@@ -197,11 +211,34 @@ public class ClientConnection implements Closeable {
         }
     }
 
-    public void requestThread(String peer) throws Exception {
-        synchronized (writeLock) {
-            out.writeUTF(Protocol.LIST_THREAD);
-            out.writeUTF(peer);
-            out.flush();
+    /** Asks for the chat history with {@code peer}; the reply goes to the thread-messages callback. */
+    public void requestThread(String peer) {
+        sendRequest(o -> {
+            o.writeUTF(Protocol.LIST_THREAD);
+            o.writeUTF(peer);
+        });
+    }
+
+    @FunctionalInterface
+    private interface RequestWriter {
+        void write(DataOutputStream out) throws IOException;
+    }
+
+    /** Queues a small request; it is written on the requests thread, after any upload in progress. */
+    private void sendRequest(RequestWriter writer) {
+        try {
+            requests.execute(() -> {
+                try {
+                    synchronized (writeLock) {
+                        writer.write(out);
+                        out.flush();
+                    }
+                } catch (IOException e) {
+                    if (running) Platform.runLater(() -> onError.accept(AppError.from(e)));
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+            // connection closed
         }
     }
 
@@ -221,18 +258,12 @@ public class ClientConnection implements Closeable {
         this.onIncoming = onIncoming;
     }
 
-    public void requestUsers() throws Exception {
-        synchronized (writeLock) {
-            out.writeUTF(Protocol.LIST_USERS);
-            out.flush();
-        }
+    public void requestUsers() {
+        sendRequest(o -> o.writeUTF(Protocol.LIST_USERS));
     }
 
-    public void requestMyFiles() throws Exception {
-        synchronized (writeLock) {
-            out.writeUTF(Protocol.LIST_MY_FILES);
-            out.flush();
-        }
+    public void requestMyFiles() {
+        sendRequest(o -> o.writeUTF(Protocol.LIST_MY_FILES));
     }
 
     public void sendFile(String toUser, Path file, BiConsumer<Long, Long> onProgress) throws Exception {
@@ -243,25 +274,37 @@ public class ClientConnection implements Closeable {
 
         String fileName = file.getFileName().toString();
 
-        synchronized (writeLock) {
-            out.writeUTF(Protocol.SEND_FILE);
-            out.writeUTF(toUser);
-            out.writeUTF(fileName);
-            out.writeLong(size);
-            out.flush();
+        // Open the file before announcing it, so a missing file fails cleanly.
+        try (InputStream fileIn = Files.newInputStream(file)) {
+            synchronized (writeLock) {
+                boolean announced = false;
+                try {
+                    out.writeUTF(Protocol.SEND_FILE);
+                    out.writeUTF(toUser);
+                    out.writeUTF(fileName);
+                    out.writeLong(size);
+                    announced = true;
 
-            try (InputStream fileIn = Files.newInputStream(file)) {
-                byte[] buffer = new byte[Limits.BUFFER_SIZE];
-                long sent = 0;
-                int read;
-                while ((read = fileIn.read(buffer)) != -1) {
-                    out.write(buffer, 0, read);
-                    sent += read;
+                    // The server reads exactly `size` bytes, so send exactly that many, even if the
+                    // file grows meanwhile (the extra bytes would be read as commands).
+                    byte[] buffer = new byte[Limits.BUFFER_SIZE];
+                    long sent = 0;
+                    while (sent < size) {
+                        int read = fileIn.read(buffer, 0, (int) Math.min(buffer.length, size - sent));
+                        if (read == -1) throw new AppException(AppError.FILE_CHANGED);
+                        out.write(buffer, 0, read);
+                        sent += read;
 
-                    long sentFinal = sent;
-                    Platform.runLater(() -> onProgress.accept(sentFinal, size));
+                        long sentFinal = sent;
+                        Platform.runLater(() -> onProgress.accept(sentFinal, size));
+                    }
+                    out.flush();
+                } catch (Exception e) {
+                    // Mid-upload the server is still waiting for file bytes, so this stream can't be
+                    // resynchronized: drop it (the listener then reports "disconnected").
+                    if (announced) socket.close();
+                    throw e;
                 }
-                out.flush();
             }
         }
     }
@@ -350,6 +393,13 @@ public class ClientConnection implements Closeable {
                         long doneFinal = received;
                         Platform.runLater(() -> onProgress.accept(doneFinal, fileSize));
                     }
+                } catch (Exception e) {
+                    // Don't leave a truncated file that looks like the real one.
+                    try {
+                        Files.deleteIfExists(finalTarget);
+                    } catch (IOException ignored) {
+                    }
+                    throw e;
                 }
 
                 Platform.runLater(() -> {
@@ -388,6 +438,7 @@ public class ClientConnection implements Closeable {
     @Override
     public void close() throws IOException {
         running = false;
+        requests.shutdownNow();
         socket.close();
     }
 

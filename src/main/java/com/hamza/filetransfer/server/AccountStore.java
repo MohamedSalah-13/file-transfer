@@ -67,6 +67,12 @@ public class AccountStore {
         return props.containsKey(SafeNames.accountKey(username));
     }
 
+    /** The stored spelling of an account name (case-insensitive lookup), or null if there is no such account. */
+    public synchronized String canonicalName(String username) {
+        Account account = load(SafeNames.accountKey(username));
+        return account == null ? null : account.displayName();
+    }
+
     /**
      * Checks the password, or registers the account if the name is new.
      * The returned username is the canonical spelling stored for the account.

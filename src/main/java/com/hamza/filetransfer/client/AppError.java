@@ -21,6 +21,8 @@ public record AppError(String code, List<String> args) {
     public static final String ALREADY_ONLINE = "already_online";
     public static final String CANNOT_CONNECT = "cannot_connect";
     public static final String DISCONNECTED = "disconnected";
+    /** The file got shorter while it was being sent. */
+    public static final String FILE_CHANGED = "file_changed";
     public static final String INVALID_PORT = "invalid_port";
     /** args: unexpected message type */
     public static final String PROTOCOL_ERROR = "protocol_error";

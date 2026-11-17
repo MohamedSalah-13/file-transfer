@@ -329,89 +329,57 @@ public class ClientApp extends Application {
             // Just resort safely (in-place).
             resortUsers();
 
-            try {
-                conn.requestThread(activePeer);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            conn.requestThread(activePeer); // queued off the FX thread
         });
 
-        // connect logic: add thread callbacks
         btnConnect.setOnAction(a -> {
+            int port;
             try {
-                if (conn != null) { // reconnect: drop the old session first
-                    try { conn.close(); } catch (Exception ignored) { }
-                    conn = null;
-                }
-                char[] password = pfPassword.getText().toCharArray();
-                pfPassword.clear();
-                int port;
-                try {
-                    port = Integer.parseInt(tfPort.getText().trim());
-                } catch (NumberFormatException e) {
-                    throw new AppException(AppError.INVALID_PORT);
-                }
-                conn = new ClientConnection(tfHost.getText().trim(), port, tfUser.getText().trim(), password);
-                tfUser.setText(conn.getUsername());
-                setStatus(lblStatus, "status_connected", conn.getUsername());
-
-                conn.setOnError(err -> setStatus(lblStatus, "status_error", err));
-                conn.setOnUsers(this::applyUsers);
-                conn.setOnThreadMessages(msgs -> {
-                    chatMessages.setAll(msgs);
-                    updateLastPreviewFromThread(activePeer, msgs);
-
-                    // Activity changed -> resort (no clearing).
-                    resortUsers();
-                });
-
-                conn.setOnIncomingText(evt -> {
-                    long ms = FileTypeUtil.parseIsoMillis(evt.timestamp());
-                    bumpUnreadAndPreview(evt.fromUser(), "[MSG] " + I18n.get("preview_new_message"), ms);
-
-                    if (activePeer != null && activePeer.equals(evt.fromUser())) {
-                        clearUnread(activePeer);
-                        try {
-                            conn.requestThread(activePeer);
-                        } catch (Exception ignored) {
-                        }
-                    }
-
-                    resortUsers();
-                });
-
-                conn.setOnIncoming(fileEvt -> {
-                    String from = fileEvt.fromUserProperty().get();
-                    String fileName = fileEvt.fileNameProperty().get();
-                    long ms = FileTypeUtil.parseIsoMillis(fileEvt.timestampProperty().get());
-
-                    bumpUnreadAndPreview(from, FileTypeUtil.previewPrefixForFile(fileName) + fileName, ms);
-
-                    if (activePeer != null && activePeer.equals(from)) {
-                        clearUnread(activePeer);
-                        try {
-                            conn.requestThread(activePeer);
-                        } catch (Exception ignored) {
-                        }
-                    }
-
-                    resortUsers();
-                });
-                // ---------------------------------
-                conn.requestUsers();
-
-            } catch (Exception ex) {
-                setStatus(lblStatus, "status_connect_failed", AppError.from(ex));
+                port = Integer.parseInt(tfPort.getText().trim());
+            } catch (NumberFormatException e) {
+                setStatus(lblStatus, "status_connect_failed", new AppError(AppError.INVALID_PORT));
+                return;
             }
+            String host = tfHost.getText().trim();
+            String user = tfUser.getText().trim();
+            char[] password = pfPassword.getText().toCharArray();
+            pfPassword.clear();
+
+            if (conn != null) { // reconnect: drop the old session and its chats first
+                try { conn.close(); } catch (Exception ignored) { }
+                conn = null;
+            }
+            activePeer = null;
+            chatMessages.clear();
+            userItems.clear();
+            userIndex.clear();
+            chatTitle.textProperty().bind(I18n.bind("select_user"));
+
+            // Connecting and logging in wait on the network (and the server's password hashing),
+            // so they run off the FX thread to keep the window responsive.
+            btnConnect.setDisable(true);
+            setStatus(lblStatus, "status_connecting");
+            Thread t = new Thread(() -> {
+                try {
+                    ClientConnection c = new ClientConnection(host, port, user, password);
+                    Platform.runLater(() -> {
+                        btnConnect.setDisable(false);
+                        attachConnection(c, tfUser, lblStatus);
+                    });
+                } catch (Exception ex) {
+                    AppError err = AppError.from(ex);
+                    Platform.runLater(() -> {
+                        btnConnect.setDisable(false);
+                        setStatus(lblStatus, "status_connect_failed", err);
+                    });
+                }
+            }, "connect");
+            t.setDaemon(true);
+            t.start();
         });
 
         btnRefreshUsers.setOnAction(a -> {
-            if (conn == null) return;
-            try {
-                conn.requestUsers();
-            } catch (Exception ex) {
-                setStatus(lblStatus, "status_error", AppError.from(ex));
-            }
+            if (conn != null) conn.requestUsers();
         });
 
         Scene scene = new Scene(root, 1280, 720);
@@ -459,6 +427,54 @@ public class ClientApp extends Application {
         );
     }
 
+    /** Wires a freshly logged-in connection to the UI, then starts it. Runs on the FX thread. */
+    private void attachConnection(ClientConnection c, TextField tfUser, Label lblStatus) {
+        conn = c;
+        tfUser.setText(c.getUsername());
+        setStatus(lblStatus, "status_connected", c.getUsername());
+
+        // `conn != c` guards ignore late callbacks from a connection that was replaced by a reconnect.
+        c.setOnError(err -> {
+            if (conn == c) setStatus(lblStatus, "status_error", err);
+        });
+        c.setOnUsers(users -> {
+            if (conn == c) applyUsers(users);
+        });
+        c.setOnThreadMessages((peer, msgs) -> {
+            if (conn != c) return;
+            // A reply can arrive after the user switched to another chat: only show it if it is
+            // still the open one, but its last message is still the right preview for `peer`.
+            if (peer.equals(activePeer)) chatMessages.setAll(msgs);
+            updateLastPreviewFromThread(peer, msgs);
+            resortUsers();
+        });
+        c.setOnIncomingText(evt -> {
+            if (conn != c) return;
+            long ms = FileTypeUtil.parseIsoMillis(evt.timestamp());
+            bumpUnreadAndPreview(evt.fromUser(), "[MSG] " + I18n.get("preview_new_message"), ms);
+            if (evt.fromUser().equals(activePeer)) {
+                clearUnread(activePeer);
+                c.requestThread(activePeer);
+            }
+            resortUsers();
+        });
+        c.setOnIncoming(fileEvt -> {
+            if (conn != c) return;
+            String from = fileEvt.fromUserProperty().get();
+            String fileName = fileEvt.fileNameProperty().get();
+            long ms = FileTypeUtil.parseIsoMillis(fileEvt.timestampProperty().get());
+            bumpUnreadAndPreview(from, FileTypeUtil.previewPrefixForFile(fileName) + fileName, ms);
+            if (from.equals(activePeer)) {
+                clearUnread(activePeer);
+                c.requestThread(activePeer);
+            }
+            resortUsers();
+        });
+
+        c.start(); // only now, so no push arrives before the callbacks above are in place
+        c.requestUsers();
+    }
+
     private ChatMessage findMessageById(String messageId) {
         for (ChatMessage m : chatMessages) {
             if (m.messageIdProperty().get().equals(messageId)) return m;
@@ -466,7 +482,10 @@ public class ClientApp extends Application {
         return null;
     }
 
-    private void applyUsers(List<String> usernames) {
+    private void applyUsers(List<String> onlineUsers) {
+        // The server lists everyone online, including us; you can't chat with yourself.
+        String me = conn == null ? null : conn.getUsername();
+        List<String> usernames = onlineUsers.stream().filter(u -> !u.equals(me)).toList();
         Set<String> usernameSet = new HashSet<>(usernames);
 
         // Add new users that don't exist yet
@@ -487,8 +506,13 @@ public class ClientApp extends Application {
     }
 
     private void bumpUnreadAndPreview(String fromUser, String preview, long activityMillis) {
-        UserItem item = userIndex.get(fromUser);
-        if (item == null) return;
+        // The sender may have logged in after our last user-list refresh: add them instead of
+        // dropping the notification.
+        UserItem item = userIndex.computeIfAbsent(fromUser, name -> {
+            UserItem added = new UserItem(name);
+            userItems.add(added);
+            return added;
+        });
 
         item.setLastPreview(preview);
 
@@ -529,10 +553,7 @@ public class ClientApp extends Application {
 
     private void refreshThreadIfActive(String peer) {
         if (conn == null || !peer.equals(activePeer)) return;
-        try {
-            conn.requestThread(peer);
-        } catch (Exception ignored) {
-        }
+        conn.requestThread(peer);
     }
 
     /** A label whose text follows the current language. */

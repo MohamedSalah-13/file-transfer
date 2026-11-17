@@ -27,6 +27,7 @@ public final class ErrorCode {
     /** args: max size in MB */
     public static final String FILE_TOO_LARGE = "file_too_large";
     public static final String UNKNOWN_RECIPIENT = "unknown_recipient";
+    public static final String SELF_RECIPIENT = "self_recipient";
     public static final String UNKNOWN_USER = "unknown_user";
     public static final String EMPTY_TEXT = "empty_text";
     /** args: max characters */
