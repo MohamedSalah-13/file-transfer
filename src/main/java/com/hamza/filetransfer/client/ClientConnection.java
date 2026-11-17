@@ -53,7 +53,7 @@ public class ClientConnection implements Closeable {
 
     /**
      * Small CONTROL requests (list users, list thread...) are written from this thread, never from the
-     * caller's: an upload holds the write lock for its whole duration, and the FX thread must not wait on it.
+     * caller's: a socket write can block (slow network, full buffers) and the FX thread must not wait on it.
      */
     private final ExecutorService requests = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "client-requests");
@@ -274,47 +274,83 @@ public class ClientConnection implements Closeable {
 
         String fileName = file.getFileName().toString();
 
-        // Open the file before announcing it, so a missing file fails cleanly.
-        try (InputStream fileIn = Files.newInputStream(file)) {
-            synchronized (writeLock) {
-                boolean announced = false;
-                try {
-                    out.writeUTF(Protocol.SEND_FILE);
-                    out.writeUTF(toUser);
-                    out.writeUTF(fileName);
-                    out.writeLong(size);
-                    announced = true;
+        // Each upload gets its own TRANSFER socket, so the CONTROL socket stays free for chat,
+        // notifications and other requests, and several uploads can run at once.
+        // Open the file first, so a missing file fails before anything is sent.
+        try (InputStream fileIn = Files.newInputStream(file);
+             TransferSocket t = openTransfer()) {
+            t.out.writeUTF(Protocol.SEND_FILE);
+            t.out.writeUTF(toUser);
+            t.out.writeUTF(fileName);
+            t.out.writeLong(size);
 
-                    // The server reads exactly `size` bytes, so send exactly that many, even if the
-                    // file grows meanwhile (the extra bytes would be read as commands).
-                    byte[] buffer = new byte[Limits.BUFFER_SIZE];
-                    long sent = 0;
-                    while (sent < size) {
-                        int read = fileIn.read(buffer, 0, (int) Math.min(buffer.length, size - sent));
-                        if (read == -1) throw new AppException(AppError.FILE_CHANGED);
-                        out.write(buffer, 0, read);
-                        sent += read;
+            // The server reads exactly `size` bytes, so send exactly that many even if the file grows.
+            // If it shrinks, closing this socket (try-with-resources) makes the server discard the upload.
+            byte[] buffer = new byte[Limits.BUFFER_SIZE];
+            long sent = 0;
+            while (sent < size) {
+                int read = fileIn.read(buffer, 0, (int) Math.min(buffer.length, size - sent));
+                if (read == -1) throw new AppException(AppError.FILE_CHANGED);
+                t.out.write(buffer, 0, read);
+                sent += read;
 
-                        long sentFinal = sent;
-                        Platform.runLater(() -> onProgress.accept(sentFinal, size));
-                    }
-                    out.flush();
-                } catch (Exception e) {
-                    // Mid-upload the server is still waiting for file bytes, so this stream can't be
-                    // resynchronized: drop it (the listener then reports "disconnected").
-                    if (announced) socket.close();
-                    throw e;
-                }
+                long sentFinal = sent;
+                Platform.runLater(() -> onProgress.accept(sentFinal, size));
             }
+            t.out.flush();
+
+            // The reply comes on this socket: SEND_OK <messageId> or ERROR <error> (e.g. unknown recipient).
+            String reply = t.in.readUTF();
+            if (Protocol.ERROR.equals(reply)) throw new AppException(AppError.read(t.in));
+            if (!Protocol.SEND_OK.equals(reply)) throw new AppException(AppError.PROTOCOL_ERROR, reply);
+            t.in.readUTF(); // message id
+        }
+    }
+
+    /** An extra socket authenticated with this session's token, used for one upload or download. */
+    private static final class TransferSocket implements Closeable {
+        final Socket socket;
+        final DataInputStream in;
+        final DataOutputStream out;
+
+        TransferSocket(Socket socket) throws IOException {
+            this.socket = socket;
+            this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+            this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+        }
+
+        @Override
+        public void close() throws IOException {
+            socket.close();
+        }
+    }
+
+    /** Opens a TRANSFER socket: {@code HELLO_TRANSFER <user> <token>} -> {@code HELLO_OK}. */
+    private TransferSocket openTransfer() throws Exception {
+        Socket s = new Socket();
+        try {
+            s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS);
+            TransferSocket t = new TransferSocket(s);
+            t.out.writeUTF(Protocol.HELLO_TRANSFER);
+            t.out.writeUTF(username);
+            t.out.writeUTF(sessionToken);
+            t.out.flush();
+
+            String reply = t.in.readUTF();
+            if (Protocol.AUTH_FAILED.equals(reply) || Protocol.ERROR.equals(reply)) {
+                throw new AppException(AppError.read(t.in));
+            }
+            if (!Protocol.HELLO_OK.equals(reply)) throw new AppException(AppError.PROTOCOL_ERROR, reply);
+            return t;
+        } catch (Exception e) {
+            s.close();
+            throw e;
         }
     }
 
     /**
-     * Parallel download (MVP):
-     * - opens a NEW socket per download
-     * - performs HELLO with same username
-     * - sends DOWNLOAD fileId
-     * - receives FILE + bytes and writes to disk
+     * Downloads on its own TRANSFER socket (in parallel with chat and other transfers):
+     * sends DOWNLOAD fileId, receives FILE + bytes and writes them to disk.
      */
     public void startParallelDownload(String fileId, Path targetDirOrFile,
                                       BiConsumer<Long, Long> onProgress,
@@ -325,22 +361,9 @@ public class ClientConnection implements Closeable {
         Thread t = new Thread(() -> {
             Platform.runLater(() -> onStatus.accept("CONNECTING"));
 
-            try (Socket s = new Socket(host, port);
-                 DataInputStream din = new DataInputStream(new BufferedInputStream(s.getInputStream()));
-                 DataOutputStream dout = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()))) {
-
-                dout.writeUTF(Protocol.HELLO_TRANSFER);
-                dout.writeUTF(username);
-                dout.writeUTF(sessionToken);
-                dout.flush();
-
-                String helloResp = din.readUTF();
-                if (Protocol.AUTH_FAILED.equals(helloResp) || Protocol.ERROR.equals(helloResp)) {
-                    throw new AppException(AppError.read(din));
-                }
-                if (!Protocol.HELLO_OK.equals(helloResp)) {
-                    throw new AppException(AppError.PROTOCOL_ERROR, helloResp);
-                }
+            try (TransferSocket ts = openTransfer()) {
+                DataInputStream din = ts.in;
+                DataOutputStream dout = ts.out;
 
                 dout.writeUTF(Protocol.DOWNLOAD);
                 dout.writeUTF(fileId);

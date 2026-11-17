@@ -74,35 +74,79 @@ class ClientConnectionTest {
     }
 
     @Test
-    void requestsDoNotWaitForAnUploadInProgress() throws Exception {
+    void uploadsUseTheirOwnTransferSocketSoChatKeepsWorking() throws Exception {
         conn = login("carol", "carol");
         Peer control = server.lastControl;
         conn.start();
 
-        // The fake server reads the header and then stops reading, so the upload stalls
-        // (holding the write lock) once the socket buffers are full.
+        // The fake server reads the upload header and then stops reading, so the upload stalls
+        // once the socket buffers are full.
         Path big = dir.resolve("big.bin");
         Files.write(big, new byte[64 * 1024 * 1024]);
-        CompletableFuture<Void> upload = CompletableFuture.runAsync(() -> {
-            try {
-                conn.sendFile("dave", big, (done, total) -> {});
-            } catch (Exception e) {
-                throw new CompletionException(e);
-            }
-        });
-        assertEquals(Protocol.SEND_FILE, control.in.readUTF());
-        assertEquals("dave", control.in.readUTF());
-        assertEquals("big.bin", control.in.readUTF());
-        assertEquals(64L * 1024 * 1024, control.in.readLong());
+        CompletableFuture<Void> upload = uploadAsync("dave", big);
+        Peer transfer = server.next();
+        transfer.acceptTransferLogin();
+        assertEquals(Protocol.SEND_FILE, transfer.in.readUTF());
+        assertEquals("dave", transfer.in.readUTF());
+        assertEquals("big.bin", transfer.in.readUTF());
+        assertEquals(64L * 1024 * 1024, transfer.in.readLong());
         Thread.sleep(300);
         assertFalse(upload.isDone(), "upload is stalled");
 
+        // The CONTROL socket is not involved, so chat requests still reach the server right away.
         long start = System.nanoTime();
         conn.requestThread("dave");
-        conn.requestUsers();
+        assertEquals(Protocol.LIST_THREAD, control.in.readUTF());
+        assertEquals("dave", control.in.readUTF());
         long millis = (System.nanoTime() - start) / 1_000_000;
+        assertTrue(millis < 1000, "LIST_THREAD arrived after " + millis + " ms while the upload was stalled");
+        assertFalse(upload.isDone(), "upload still stalled");
+    }
 
-        assertTrue(millis < 200, "requests returned in " + millis + " ms instead of waiting for the upload");
+    @Test
+    void anUploadSendsExactlyTheFileAndWaitsForSendOk() throws Exception {
+        conn = login("carol", "carol");
+        Path file = dir.resolve("notes.txt");
+        Files.writeString(file, "hello dave");
+        CompletableFuture<Void> upload = uploadAsync("dave", file);
+
+        Peer transfer = server.next();
+        transfer.acceptTransferLogin();
+        assertEquals(Protocol.SEND_FILE, transfer.in.readUTF());
+        assertEquals("dave", transfer.in.readUTF());
+        assertEquals("notes.txt", transfer.in.readUTF());
+        assertEquals(10, transfer.in.readLong());
+        assertEquals("hello dave", new String(transfer.in.readNBytes(10)));
+        Thread.sleep(100);
+        assertFalse(upload.isDone(), "upload waits for the server's reply");
+
+        transfer.out.writeUTF(Protocol.SEND_OK);
+        transfer.out.writeUTF("11111111-1111-1111-1111-111111111111");
+        transfer.out.flush();
+        upload.get(5, TimeUnit.SECONDS);
+        assertEquals(-1, transfer.in.read(), "client closes the transfer socket afterwards");
+    }
+
+    @Test
+    void uploadErrorsFromTheServerFailThatUpload() throws Exception {
+        conn = login("carol", "carol");
+        Path file = dir.resolve("notes.txt");
+        Files.writeString(file, "x");
+        CompletableFuture<Void> upload = uploadAsync("nobody", file);
+
+        Peer transfer = server.next();
+        transfer.acceptTransferLogin();
+        transfer.in.readUTF(); // SEND_FILE
+        transfer.in.readUTF(); // to
+        transfer.in.readUTF(); // name
+        transfer.in.readNBytes((int) transfer.in.readLong());
+        transfer.out.writeUTF(Protocol.ERROR);
+        transfer.out.writeUTF(ErrorCode.UNKNOWN_RECIPIENT);
+        transfer.out.writeInt(0);
+        transfer.out.flush();
+
+        ExecutionException e = assertThrows(ExecutionException.class, () -> upload.get(5, TimeUnit.SECONDS));
+        assertEquals(ErrorCode.UNKNOWN_RECIPIENT, AppError.from(e.getCause()).code());
     }
 
     @Test
@@ -182,6 +226,16 @@ class ClientConnectionTest {
 
     // ===== helpers =====
 
+    private CompletableFuture<Void> uploadAsync(String to, Path file) {
+        return CompletableFuture.runAsync(() -> {
+            try {
+                conn.sendFile(to, file, (done, total) -> {});
+            } catch (Exception e) {
+                throw new CompletionException(e);
+            }
+        });
+    }
+
     private Future<ClientConnection> connectAsync(String user) {
         return CompletableFuture.supplyAsync(() -> {
             try {
@@ -257,12 +311,16 @@ class ClientConnectionTest {
             in.readUTF(); // password
         }
 
-        void acceptTransferHello() throws IOException {
+        void acceptTransferLogin() throws IOException {
             assertEquals(Protocol.HELLO_TRANSFER, in.readUTF());
             in.readUTF(); // user
             assertEquals("token-123", in.readUTF());
             out.writeUTF(Protocol.HELLO_OK);
             out.flush();
+        }
+
+        void acceptTransferHello() throws IOException {
+            acceptTransferLogin();
             assertEquals(Protocol.DOWNLOAD, in.readUTF());
             in.readUTF(); // file id
         }

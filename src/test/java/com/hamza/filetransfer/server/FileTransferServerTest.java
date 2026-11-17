@@ -120,7 +120,7 @@ class FileTransferServerTest {
         byte[] data = new byte[300_000];
         for (int i = 0; i < data.length; i++) data[i] = (byte) i;
 
-        bob.sendFile("Ali", "../../report.pdf", data);
+        bob.sendFile("Ali", "../../report.pdf", data); // on CONTROL, as 1.0.0 clients do: still accepted
         bob.expectSendOk();
 
         assertEquals(Protocol.INCOMING_FILE, ali.readUTF());
@@ -144,6 +144,34 @@ class FileTransferServerTest {
         assertEquals("report.pdf", transfer.readUTF());
         assertEquals(data.length, transfer.in.readLong());
         assertArrayEquals(data, transfer.in.readNBytes(data.length));
+    }
+
+    @Test
+    void uploadsOnATransferSocketAreAnsweredThereAndNotifyTheRecipient() throws Exception {
+        Wire ali = login("Ali", "secret1");
+        Wire bob = login("bob", "secret2");
+
+        Wire upload = transfer("bob", bob.token);
+        upload.sendFile("Ali", "photo.jpg", new byte[70_000]);
+        String messageId = upload.expectSendOk(); // the reply comes on the transfer socket
+
+        assertEquals(Protocol.INCOMING_FILE, ali.readUTF());
+        assertEquals(messageId, ali.readUTF());
+
+        // bob's CONTROL socket got nothing from the upload and still works.
+        bob.socket.setSoTimeout(300);
+        assertThrows(java.net.SocketTimeoutException.class, bob::readUTF);
+        bob.socket.setSoTimeout(10_000);
+        assertTrue(bob.listUsers().contains("bob"));
+    }
+
+    @Test
+    void uploadErrorsOnATransferSocketAreReportedThere() throws Exception {
+        Wire bob = login("bob", "secret2");
+
+        Wire upload = transfer("bob", bob.token);
+        upload.sendFile("nobody", "a.txt", new byte[1000]);
+        assertEquals(ErrorCode.UNKNOWN_RECIPIENT, upload.expectError());
     }
 
     @Test
@@ -183,6 +211,16 @@ class FileTransferServerTest {
                 Thread.sleep(50);
             }
         }
+    }
+
+    private Wire transfer(String user, String token) throws Exception {
+        Wire w = connect();
+        w.out.writeUTF(Protocol.HELLO_TRANSFER);
+        w.out.writeUTF(user);
+        w.out.writeUTF(token);
+        w.out.flush();
+        assertEquals(Protocol.HELLO_OK, w.readUTF());
+        return w;
     }
 
     private Wire login(String user, String password) throws Exception {

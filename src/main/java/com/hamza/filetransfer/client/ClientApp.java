@@ -235,9 +235,11 @@ public class ClientApp extends Application {
             row.setStatus("SENDING");
             transfers.add(row);
 
+            ClientConnection c = conn; // the upload belongs to this session even if the user reconnects
             Thread t = new Thread(() -> {
                 try {
-                    conn.sendFile(peer, file, row::setProgress);
+                    // Runs on its own TRANSFER socket; server errors (e.g. unknown recipient) fail this row.
+                    c.sendFile(peer, file, row::setProgress);
                     Platform.runLater(() -> {
                         row.setStatus("DONE");
                         refreshThreadIfActive(peer);
