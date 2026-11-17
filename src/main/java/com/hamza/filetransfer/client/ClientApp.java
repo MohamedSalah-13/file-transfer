@@ -407,6 +407,11 @@ public class ClientApp extends Application {
         scene.getStylesheets().add(getClass().getResource("/styles/app.css").toExternalForm());
         applyOrientation(root);
 
+        // After midnight, "09:30" must become "Yesterday, 09:30". The sidebar binds to the date;
+        // chat bubbles format their time when rendered, so re-render them.
+        DayClock.todayProperty().addListener((obs, oldDay, newDay) -> chatList.refresh());
+        DayClock.start();
+
         stage.titleProperty().bind(I18n.bind("app_title"));
         stage.setScene(scene);
         stage.show();

@@ -64,7 +64,7 @@ public final class I18n {
      * Falls back to the raw text if it is not an ISO-8601 instant.
      */
     public static String messageTime(String isoInstant) {
-        return messageTime(isoInstant, ZonedDateTime.now());
+        return messageTime(isoInstant, ZonedDateTime.now(DayClock.clock()));
     }
 
     static String messageTime(String isoInstant, ZonedDateTime now) {
@@ -76,7 +76,7 @@ public final class I18n {
     /** Same as {@link #messageTime(String)} for epoch millis; 0 or less means "no time" (empty). */
     public static String messageTime(long epochMillis) {
         if (epochMillis <= 0) return "";
-        ZonedDateTime now = ZonedDateTime.now();
+        ZonedDateTime now = ZonedDateTime.now(DayClock.clock());
         return relative(Instant.ofEpochMilli(epochMillis).atZone(now.getZone()), now);
     }
 
@@ -93,7 +93,7 @@ public final class I18n {
 
     /** Full date and time (with weekday) for tooltips. */
     public static String messageTimeFull(String isoInstant) {
-        ZonedDateTime t = parseInstant(isoInstant, ZoneId.systemDefault());
+        ZonedDateTime t = parseInstant(isoInstant, DayClock.clock().getZone());
         return t == null ? (isoInstant == null ? "" : isoInstant) : format(t, "time_pattern_full");
     }
 

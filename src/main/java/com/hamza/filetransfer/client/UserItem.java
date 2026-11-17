@@ -10,11 +10,12 @@ public class UserItem {
     private final LongProperty lastActivityMillis = new SimpleLongProperty(0);
     private final IntegerProperty unreadCount = new SimpleIntegerProperty(0);
 
-    // Derived from the activity time, so it uses the same format as chat bubbles
-    // and re-translates when the language changes ("Yesterday" / "أمس").
+    // Derived from the activity time, so it uses the same format as chat bubbles,
+    // re-translates when the language changes ("Yesterday" / "أمس"),
+    // and becomes "Yesterday, ..." by itself after midnight.
     private final StringBinding lastTime = Bindings.createStringBinding(
             () -> I18n.messageTime(lastActivityMillis.get()),
-            lastActivityMillis, I18n.bundleProperty());
+            lastActivityMillis, I18n.bundleProperty(), DayClock.todayProperty());
 
     public UserItem(String username) {
         this.username.set(username);
