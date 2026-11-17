@@ -2,6 +2,9 @@ package com.hamza.filetransfer.client;
 
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.beans.binding.Bindings;
+import javafx.beans.property.ObjectProperty;
+import javafx.beans.property.SimpleObjectProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
@@ -24,7 +27,6 @@ import java.util.*;
 
 public class ClientApp extends Application {
 
-    private final Map<String, Label> translatableLabels = new HashMap<>(); // To track labels for re-translation
     private final ObservableList<UserItem> userItems = FXCollections.observableArrayList();
     private final Map<String, UserItem> userIndex = new HashMap<>();
     private final ObservableList<ChatMessage> chatMessages = FXCollections.observableArrayList();
@@ -39,39 +41,48 @@ public class ClientApp extends Application {
 
         return a.getUsername().compareToIgnoreCase(b.getUsername());
     };
-    private ResourceBundle bundle;
     private ClientConnection conn;
     private String activePeer;
     private ListView<ChatMessage> chatListRef;
 
+    private boolean resorting;
+
     private void resortUsers() {
         // Sort in-place. This does NOT temporarily clear the list, so it won't break selection.
-        FXCollections.sort(userItems, USER_COMPARATOR);
+        // Sorting makes the ListView re-select the current item, which fires the selection
+        // listener again (and that listener sorts) - the flag breaks that loop.
+        if (resorting) return;
+        resorting = true;
+        try {
+            FXCollections.sort(userItems, USER_COMPARATOR);
+        } finally {
+            resorting = false;
+        }
     }
 
     @Override
     public void start(Stage stage) {
-        // ThemeManager.applyLight();
-        setLanguage("en"); // Default language
+        I18n.setLanguage("en"); // Default language
         ThemeManager.applyTheme(ThemeManager.getThemes().getFirst());
 
         TextField tfHost = new TextField("127.0.0.1");
         TextField tfPort = new TextField("5000");
         TextField tfUser = new TextField("user1");
         PasswordField pfPassword = new PasswordField();
-        pfPassword.setPromptText("Password (new user: choose one)");
-        Button btnConnect = new Button("Connect");
+        pfPassword.promptTextProperty().bind(I18n.bind("password_prompt"));
+        Button btnConnect = new Button();
+        btnConnect.textProperty().bind(I18n.bind("connect"));
 
-        Label lblStatus = new Label("Not connected");
-        // lblStatus.textProperty().bind(createStringBinding("status_not_connected"));
+        Label lblStatus = label("status_not_connected");
 
-        // Language Picker
+        // Language Picker (language names are shown in their own language on purpose)
         ComboBox<String> langPicker = new ComboBox<>(FXCollections.observableArrayList("English", "العربية"));
         langPicker.getSelectionModel().selectFirst();
         langPicker.setOnAction(e -> {
             String selected = langPicker.getValue();
-            setLanguage(selected.equals("العربية") ? "ar" : "en");
-            updateOrientation(stage.getScene().getRoot());
+            I18n.setLanguage(selected.equals("العربية") ? "ar" : "en");
+            applyOrientation(stage.getScene().getRoot());
+            if (chatListRef != null) chatListRef.refresh(); // bubbles read translations when rendered
         });
 
         // Theme Picker
@@ -86,29 +97,38 @@ public class ClientApp extends Application {
             }
         });
 
-        Button btnToggleRight = new Button("Hide Transfers");
+        Button btnToggleRight = new Button();
 
-        Region spacer = new Region();
-        HBox top = new HBox(
-                10,
-                new Label(bundle.getString("host")), tfHost,
-                new Label(bundle.getString("port")), tfPort,
-                new Label(bundle.getString("user")), tfUser,
+        tfHost.setPrefColumnCount(9);
+        tfPort.setPrefColumnCount(4);
+        tfUser.setPrefColumnCount(8);
+        pfPassword.setPrefColumnCount(14);
+
+        // Two groups that wrap onto a second line when the window is too narrow,
+        // instead of truncating labels to "..." (Arabic labels are longer).
+        HBox connectionGroup = new HBox(10,
+                label("host"), tfHost,
+                label("port"), tfPort,
+                label("user"), tfUser,
                 pfPassword,
-                btnConnect, lblStatus,
-                spacer,
-                new Label("Lang:"), langPicker,
-                new Label("Theme:"), themePicker,
-                btnToggleRight
-        );
-        HBox.setHgrow(spacer, Priority.ALWAYS);
+                btnConnect, lblStatus);
+        HBox settingsGroup = new HBox(10,
+                label("language"), langPicker,
+                label("theme"), themePicker,
+                btnToggleRight);
+        for (HBox group : List.of(connectionGroup, settingsGroup)) {
+            group.setAlignment(Pos.CENTER_LEFT);
+            for (Node n : group.getChildren()) {
+                if (!(n instanceof TextInputControl) && n instanceof Region r) r.setMinWidth(Region.USE_PREF_SIZE);
+            }
+        }
+        FlowPane top = new FlowPane(24, 8, connectionGroup, settingsGroup);
         top.setAlignment(Pos.CENTER_LEFT);
         top.getStyleClass().add("topbar");
 
         // ===== Left sidebar =====
         TextField tfSearchUsers = new TextField();
-        // tfSearchUsers.setPromptText("Search users...");
-        tfSearchUsers.promptTextProperty().bind(createStringBinding("search_prompt"));
+        tfSearchUsers.promptTextProperty().bind(I18n.bind("search_prompt"));
 
         FilteredList<UserItem> filteredUsers = new FilteredList<>(userItems, u -> true);
         tfSearchUsers.textProperty().addListener((obs, old, q) -> {
@@ -122,17 +142,17 @@ public class ClientApp extends Application {
         usersView.setPrefWidth(300);
         usersView.setCellFactory(lv -> new UserCell());
 
-        Button btnRefreshUsers = new Button("Refresh");
-        btnRefreshUsers.textProperty().bind(createStringBinding("refresh"));
+        Button btnRefreshUsers = new Button();
+        btnRefreshUsers.textProperty().bind(I18n.bind("refresh"));
 
-        VBox left = new VBox(10, new Label(bundle.getString("online_header")), tfSearchUsers, usersView, btnRefreshUsers);
+        VBox left = new VBox(10, label("online_header"), tfSearchUsers, usersView, btnRefreshUsers);
         left.getStyleClass().add("sidebar");
 
         // ===== Center chat surface =====
-        Label chatTitle = new Label("Select a user");
+        Label chatTitle = label("select_user");
         chatTitle.getStyleClass().add("chat-title");
 
-        Label chatSub = new Label("Files are shown like chat messages.");
+        Label chatSub = label("chat_subtitle");
         chatSub.getStyleClass().add("chat-subtitle");
 
         ListView<ChatMessage> chatList = new ListView<>(chatMessages);
@@ -156,43 +176,45 @@ public class ClientApp extends Application {
         center.getStyleClass().add("chat-surface");
 
         TextField tfMessage = new TextField();
-        tfMessage.setPromptText("Type a message...");
+        tfMessage.promptTextProperty().bind(I18n.bind("type_message"));
 
-        Button btnSendText = new Button("✅ Send Text");
+        Button btnSendText = new Button();
+        btnSendText.textProperty().bind(Bindings.concat("✅ ", I18n.bind("send_text")));
 
         btnSendText.setOnAction(a -> {
             if (conn == null || activePeer == null) return;
             String text = tfMessage.getText();
+            String peer = activePeer; // capture now: the selection may change before the thread runs
             tfMessage.clear();
 
             Thread t = new Thread(() -> {
                 try {
-                    conn.sendText(activePeer, text);
-                    Platform.runLater(() -> {
-                        try {
-                            conn.requestThread(activePeer);
-                        } catch (Exception ignored) {
-                        }
-                    });
+                    conn.sendText(peer, text);
+                    Platform.runLater(() -> refreshThreadIfActive(peer));
                 } catch (Exception ex) {
-                    Platform.runLater(() -> {/* show status */});
+                    Platform.runLater(() -> setStatus(lblStatus, "status_error", ex.getMessage()));
                 }
             }, "send-text");
             t.setDaemon(true);
             t.start();
         });
 
-        Button btnChoose = new Button("📎 Attach File");
-        Label lblChosen = new Label(" No file");
-        Button btnSend = new Button("✉ Send File");
+        Button btnChoose = new Button();
+        btnChoose.textProperty().bind(Bindings.concat("📎 ", I18n.bind("attach")));
+        ObjectProperty<Path> chosen = new SimpleObjectProperty<>();
+        Label lblChosen = new Label();
+        lblChosen.textProperty().bind(Bindings.createStringBinding(
+                () -> chosen.get() == null ? I18n.get("no_file") : chosen.get().getFileName().toString(),
+                chosen, I18n.bundleProperty()));
+        Button btnSend = new Button();
+        btnSend.textProperty().bind(Bindings.concat("✉ ", I18n.bind("send_file")));
 
-        final Path[] chosen = new Path[1];
         btnChoose.setOnAction(a -> {
             FileChooser fc = new FileChooser();
+            fc.setTitle(I18n.get("choose_file"));
             var file = fc.showOpenDialog(stage);
             if (file != null) {
-                chosen[0] = file.toPath();
-                lblChosen.setText(chosen[0].getFileName().toString());
+                chosen.set(file.toPath());
             }
         });
 
@@ -202,22 +224,23 @@ public class ClientApp extends Application {
                 // لازم تختار شخص
                 return;
             }
-            if (chosen[0] == null) return;
+            if (chosen.get() == null) return;
 
-            SimpleTransferRow row = new SimpleTransferRow("SEND " + chosen[0].getFileName() + " -> " + activePeer);
+            // capture now: the selection may change before the thread runs
+            String peer = activePeer;
+            Path file = chosen.get();
+
+            SimpleTransferRow row = new SimpleTransferRow("");
+            row.nameProperty().bind(I18n.bind("transfer_send", file.getFileName().toString(), peer));
             row.setStatus("SENDING");
             transfers.add(row);
 
             Thread t = new Thread(() -> {
                 try {
-                    conn.sendFile(activePeer, chosen[0], row::setProgress);
+                    conn.sendFile(peer, file, row::setProgress);
                     Platform.runLater(() -> {
                         row.setStatus("DONE");
-                        // تحديث المحادثة (أبسط MVP: نعمل requestThread)
-                        try {
-                            conn.requestThread(activePeer);
-                        } catch (Exception ignored) {
-                        }
+                        refreshThreadIfActive(peer);
                     });
                 } catch (Exception ex) {
                     Platform.runLater(() -> row.setStatus("FAILED: " + ex.getMessage()));
@@ -239,36 +262,39 @@ public class ClientApp extends Application {
         TableView<SimpleTransferRow> transfersTable = new TableView<>(transfers);
         transfersTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
 
-        TableColumn<SimpleTransferRow, String> tName = new TableColumn<>("Transfer");
+        TableColumn<SimpleTransferRow, String> tName = new TableColumn<>();
+        tName.textProperty().bind(I18n.bind("column_transfer"));
         tName.setCellValueFactory(c -> c.getValue().nameProperty());
 
-        TableColumn<SimpleTransferRow, Double> tProg = new TableColumn<>("Progress");
+        TableColumn<SimpleTransferRow, Double> tProg = new TableColumn<>();
+        tProg.textProperty().bind(I18n.bind("column_progress"));
         tProg.setCellValueFactory(c -> c.getValue().progressProperty().asObject());
         tProg.setCellFactory(tc -> new javafx.scene.control.cell.ProgressBarTableCell<>());
 
-        TableColumn<SimpleTransferRow, String> tStatus = new TableColumn<>("Status");
-        tStatus.setCellValueFactory(c -> c.getValue().statusProperty());
+        TableColumn<SimpleTransferRow, String> tStatus = new TableColumn<>();
+        tStatus.textProperty().bind(I18n.bind("column_status"));
+        // Rows keep language-neutral status codes ("SENDING", "FAILED: ..."); translate for display only.
+        tStatus.setCellValueFactory(c -> Bindings.createStringBinding(
+                () -> I18n.transferStatus(c.getValue().statusProperty().get()),
+                c.getValue().statusProperty(), I18n.bundleProperty()));
 
         transfersTable.getColumns().addAll(tName, tProg, tStatus);
+        transfersTable.setPlaceholder(label("no_transfers"));
 
-        VBox right = new VBox(10, new Label("Transfers"), transfersTable);
+        VBox right = new VBox(10, label("transfers"), transfersTable);
         right.getStyleClass().add("card");
         right.setPrefWidth(420);
 
-
+        btnToggleRight.textProperty().bind(Bindings.when(right.visibleProperty())
+                .then(I18n.bind("hide_transfers"))
+                .otherwise(I18n.bind("show_transfers")));
         btnToggleRight.setOnAction(e -> {
-            if (right.isVisible()) {
-                right.setVisible(false);
-                right.setManaged(false);
-                btnToggleRight.setText("Show Transfers");
-            } else {
-                right.setVisible(true);
-                right.setManaged(true);
-                btnToggleRight.setText("Hide Transfers");
-            }
+            boolean show = !right.isVisible();
+            right.setVisible(show);
+            right.setManaged(show);
         });
 
-        center.getChildren().addAll(new Label("Send"), composer);
+        center.getChildren().addAll(label("send"), composer);
         // ===== Layout =====
         BorderPane root = new BorderPane();
         root.setTop(top);
@@ -286,9 +312,10 @@ public class ClientApp extends Application {
 
         // when selecting user => load thread
         usersView.getSelectionModel().selectedItemProperty().addListener((obs, old, selected) -> {
-            if (selected == null || conn == null) return;
+            if (selected == null || conn == null || resorting) return;
 
             activePeer = selected.getUsername();
+            chatTitle.textProperty().bind(I18n.bind("chat_with", activePeer));
             selected.clearUnread();
 
             // IMPORTANT CHANGE:
@@ -315,9 +342,9 @@ public class ClientApp extends Application {
                 conn = new ClientConnection(tfHost.getText().trim(), Integer.parseInt(tfPort.getText().trim()),
                         tfUser.getText().trim(), password);
                 tfUser.setText(conn.getUsername());
-                lblStatus.setText("Connected as " + conn.getUsername());
+                setStatus(lblStatus, "status_connected", conn.getUsername());
 
-                conn.setOnError(msg -> lblStatus.setText("Error: " + msg));
+                conn.setOnError(msg -> setStatus(lblStatus, "status_error", msg));
                 conn.setOnUsers(this::applyUsers);
                 conn.setOnThreadMessages(msgs -> {
                     chatMessages.setAll(msgs);
@@ -329,7 +356,7 @@ public class ClientApp extends Application {
 
                 conn.setOnIncomingText(evt -> {
                     long ms = FileTypeUtil.parseIsoMillis(evt.timestamp());
-                    bumpUnreadAndPreview(evt.fromUser(), "[MSG] Message", ms);
+                    bumpUnreadAndPreview(evt.fromUser(), "[MSG] " + I18n.get("preview_new_message"), ms);
 
                     if (activePeer != null && activePeer.equals(evt.fromUser())) {
                         clearUnread(activePeer);
@@ -363,7 +390,7 @@ public class ClientApp extends Application {
                 conn.requestUsers();
 
             } catch (Exception ex) {
-                lblStatus.setText("Connect failed: " + ex.getMessage());
+                setStatus(lblStatus, "status_connect_failed", ex.getMessage());
             }
         });
 
@@ -372,14 +399,15 @@ public class ClientApp extends Application {
             try {
                 conn.requestUsers();
             } catch (Exception ex) {
-                lblStatus.setText(ex.getMessage());
+                setStatus(lblStatus, "status_error", ex.getMessage());
             }
         });
 
         Scene scene = new Scene(root, 1280, 720);
         scene.getStylesheets().add(getClass().getResource("/styles/app.css").toExternalForm());
+        applyOrientation(root);
 
-        stage.setTitle("File Transfer Chat - Client");
+        stage.titleProperty().bind(I18n.bind("app_title"));
         stage.setScene(scene);
         stage.show();
     }
@@ -388,11 +416,12 @@ public class ClientApp extends Application {
         if (conn == null) return;
 
         DirectoryChooser dc = new DirectoryChooser();
-        dc.setTitle("Choose download folder");
+        dc.setTitle(I18n.get("choose_download_folder"));
         var dir = dc.showDialog(stage);
         if (dir == null) return;
 
-        SimpleTransferRow row = new SimpleTransferRow("DOWNLOAD " + displayName);
+        SimpleTransferRow row = new SimpleTransferRow("");
+        row.nameProperty().bind(I18n.bind("transfer_download", displayName));
         row.setStatus("QUEUED");
         transfers.add(row);
 
@@ -482,23 +511,28 @@ public class ClientApp extends Application {
         item.updateLastActivity(ms, FileTypeUtil.formatTime(ms));
     }
 
-    private void setLanguage(String lang) {
-        Locale locale = new Locale(lang);
-        bundle = ResourceBundle.getBundle("messages", locale);
-        // In a full implementation, you'd use StringBindings to update all UI elements automatically
-    }
-
-    private void updateOrientation(Parent root) {
-        if (bundle.getLocale().getLanguage().equals("ar")) {
-            root.setNodeOrientation(NodeOrientation.RIGHT_TO_LEFT);
-        } else {
-            root.setNodeOrientation(NodeOrientation.LEFT_TO_RIGHT);
+    private void refreshThreadIfActive(String peer) {
+        if (conn == null || !peer.equals(activePeer)) return;
+        try {
+            conn.requestThread(peer);
+        } catch (Exception ignored) {
         }
     }
 
-    // Helper to create dynamic bindings for translations
-    private javafx.beans.binding.StringBinding createStringBinding(String key) {
-        return javafx.beans.binding.Bindings.createStringBinding(() -> bundle.getString(key));
+    /** A label whose text follows the current language. */
+    private static Label label(String key) {
+        Label l = new Label();
+        l.textProperty().bind(I18n.bind(key));
+        return l;
+    }
+
+    /** Shows a translated status; re-binding replaces the previous status and keeps it live on language change. */
+    private static void setStatus(Label status, String key, Object... args) {
+        status.textProperty().bind(I18n.bind(key, args));
+    }
+
+    private static void applyOrientation(Parent root) {
+        root.setNodeOrientation(I18n.isRightToLeft() ? NodeOrientation.RIGHT_TO_LEFT : NodeOrientation.LEFT_TO_RIGHT);
     }
 
     private static final class UserCell extends ListCell<UserItem> {
@@ -555,6 +589,27 @@ public class ClientApp extends Application {
             return b;
         }
 
+        /**
+         * One label per part instead of one joined string: mixing Latin/number parts with Arabic
+         * in a single label lets the bidi algorithm reorder them ("6.0 B" became "B • ... 6.0").
+         * The HBox itself flips with the node orientation, so the order stays readable in RTL.
+         */
+        private static Node metaLine(String... parts) {
+            HBox line = new HBox(6);
+            line.setAlignment(Pos.CENTER_LEFT);
+            for (int i = 0; i < parts.length; i++) {
+                if (i > 0) {
+                    Label dot = new Label("•");
+                    dot.getStyleClass().add("bubble-meta");
+                    line.getChildren().add(dot);
+                }
+                Label part = new Label(parts[i]);
+                part.getStyleClass().add("bubble-meta");
+                line.getChildren().add(part);
+            }
+            return line;
+        }
+
         private static String humanSize(long bytes) {
             double b = bytes;
             String[] units = {"B", "KB", "MB", "GB"};
@@ -578,19 +633,18 @@ public class ClientApp extends Application {
 
             boolean out = item.outgoingProperty().get();
 
-            Label title = new Label(out ? "You" : item.fromUserProperty().get());
+            Label title = new Label(out ? I18n.get("bubble_you") : item.fromUserProperty().get());
             title.getStyleClass().add("bubble-title");
 
             Node bodyNode;
-            Label meta;
+            Node meta;
 
             if (item.typeProperty().get() == ChatMessage.Type.TEXT) {
                 Label body = new Label(item.textProperty().get());
                 body.setWrapText(true);
                 bodyNode = body;
 
-                meta = new Label(item.timestampProperty().get());
-                meta.getStyleClass().add("bubble-meta");
+                meta = metaLine(item.timestampProperty().get());
 
             } else {
                 String fileName = item.fileNameProperty().get();
@@ -621,11 +675,9 @@ public class ClientApp extends Application {
                     bodyNode = fileLine;
                 }
 
-                String metaText = humanSize(item.fileSizeProperty().get())
-                        + "  •  " + item.timestampProperty().get()
-                        + (item.downloadableProperty().get() ? "  •  double-click to download" : "");
-                meta = new Label(metaText);
-                meta.getStyleClass().add("bubble-meta");
+                meta = item.downloadableProperty().get()
+                        ? metaLine(humanSize(item.fileSizeProperty().get()), item.timestampProperty().get(), I18n.get("bubble_double_click"))
+                        : metaLine(humanSize(item.fileSizeProperty().get()), item.timestampProperty().get());
             }
 
             VBox box = new VBox(4, title, bodyNode, meta);
