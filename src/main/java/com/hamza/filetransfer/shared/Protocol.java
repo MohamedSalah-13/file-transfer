@@ -3,10 +3,10 @@ package com.hamza.filetransfer.shared;
 public final class Protocol {
     // ===== Handshake =====
     // CONTROL login:  HELLO <username> <password>
-    //   -> HELLO_OK <canonicalUsername> <sessionToken> | AUTH_FAILED <reason> | HELLO_TAKEN | ERROR <msg>
+    //   -> HELLO_OK <canonicalUsername> <sessionToken> | AUTH_FAILED <error> | HELLO_TAKEN | ERROR <error>
     public static final String HELLO = "HELLO";
     // TRANSFER login (extra parallel sockets): HELLO_TRANSFER <username> <sessionToken>
-    //   -> HELLO_OK | AUTH_FAILED <reason>
+    //   -> HELLO_OK | AUTH_FAILED <error>
     // Only valid while the user's CONTROL connection that issued the token is still online.
     public static final String HELLO_TRANSFER = "HELLO_TRANSFER";
 
@@ -34,6 +34,7 @@ public final class Protocol {
     public static final String INCOMING_FILE = "INCOMING_FILE";
     public static final String INCOMING_TEXT = "INCOMING_TEXT";
 
+    // <error> = <code:UTF> <argCount:int> <arg:UTF>...  (codes in ErrorCode, translated by the client)
     public static final String ERROR = "ERROR";
 
     private Protocol() {}

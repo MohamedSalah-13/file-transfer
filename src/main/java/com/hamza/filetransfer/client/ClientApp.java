@@ -192,7 +192,7 @@ public class ClientApp extends Application {
                     conn.sendText(peer, text);
                     Platform.runLater(() -> refreshThreadIfActive(peer));
                 } catch (Exception ex) {
-                    Platform.runLater(() -> setStatus(lblStatus, "status_error", ex.getMessage()));
+                    Platform.runLater(() -> setStatus(lblStatus, "status_error", AppError.from(ex)));
                 }
             }, "send-text");
             t.setDaemon(true);
@@ -243,7 +243,7 @@ public class ClientApp extends Application {
                         refreshThreadIfActive(peer);
                     });
                 } catch (Exception ex) {
-                    Platform.runLater(() -> row.setStatus("FAILED: " + ex.getMessage()));
+                    Platform.runLater(() -> row.setFailed(AppError.from(ex)));
                 }
             }, "send-task");
             t.setDaemon(true);
@@ -273,10 +273,16 @@ public class ClientApp extends Application {
 
         TableColumn<SimpleTransferRow, String> tStatus = new TableColumn<>();
         tStatus.textProperty().bind(I18n.bind("column_status"));
-        // Rows keep language-neutral status codes ("SENDING", "FAILED: ..."); translate for display only.
-        tStatus.setCellValueFactory(c -> Bindings.createStringBinding(
-                () -> I18n.transferStatus(c.getValue().statusProperty().get()),
-                c.getValue().statusProperty(), I18n.bundleProperty()));
+        // Rows keep language-neutral status codes ("SENDING", "FAILED") and an AppError for failures;
+        // both are translated for display only, so they follow language changes.
+        tStatus.setCellValueFactory(c -> {
+            SimpleTransferRow r = c.getValue();
+            return Bindings.createStringBinding(() -> {
+                String status = I18n.transferStatus(r.statusProperty().get());
+                AppError failure = r.failureProperty().get();
+                return failure == null ? status : status + ": " + I18n.error(failure);
+            }, r.statusProperty(), r.failureProperty(), I18n.bundleProperty());
+        });
 
         transfersTable.getColumns().addAll(tName, tProg, tStatus);
         transfersTable.setPlaceholder(label("no_transfers"));
@@ -339,12 +345,17 @@ public class ClientApp extends Application {
                 }
                 char[] password = pfPassword.getText().toCharArray();
                 pfPassword.clear();
-                conn = new ClientConnection(tfHost.getText().trim(), Integer.parseInt(tfPort.getText().trim()),
-                        tfUser.getText().trim(), password);
+                int port;
+                try {
+                    port = Integer.parseInt(tfPort.getText().trim());
+                } catch (NumberFormatException e) {
+                    throw new AppException(AppError.INVALID_PORT);
+                }
+                conn = new ClientConnection(tfHost.getText().trim(), port, tfUser.getText().trim(), password);
                 tfUser.setText(conn.getUsername());
                 setStatus(lblStatus, "status_connected", conn.getUsername());
 
-                conn.setOnError(msg -> setStatus(lblStatus, "status_error", msg));
+                conn.setOnError(err -> setStatus(lblStatus, "status_error", err));
                 conn.setOnUsers(this::applyUsers);
                 conn.setOnThreadMessages(msgs -> {
                     chatMessages.setAll(msgs);
@@ -390,7 +401,7 @@ public class ClientApp extends Application {
                 conn.requestUsers();
 
             } catch (Exception ex) {
-                setStatus(lblStatus, "status_connect_failed", ex.getMessage());
+                setStatus(lblStatus, "status_connect_failed", AppError.from(ex));
             }
         });
 
@@ -399,7 +410,7 @@ public class ClientApp extends Application {
             try {
                 conn.requestUsers();
             } catch (Exception ex) {
-                setStatus(lblStatus, "status_error", ex.getMessage());
+                setStatus(lblStatus, "status_error", AppError.from(ex));
             }
         });
 
@@ -435,6 +446,7 @@ public class ClientApp extends Application {
                 dir.toPath(),
                 row::setProgress,
                 row::setStatus,
+                row::setFailed,
                 savedPath -> {
                     // attach local path to the message (enables thumbnail)
                     ChatMessage msg = findMessageById(messageId);
@@ -533,6 +545,12 @@ public class ClientApp extends Application {
     /** Shows a translated status; re-binding replaces the previous status and keeps it live on language change. */
     private static void setStatus(Label status, String key, Object... args) {
         status.textProperty().bind(I18n.bind(key, args));
+    }
+
+    /** Shows "Error: <translated reason>" (or another wrapper key); stays live on language change. */
+    private static void setStatus(Label status, String key, AppError error) {
+        status.textProperty().bind(Bindings.createStringBinding(
+                () -> I18n.get(key, I18n.error(error)), I18n.bundleProperty()));
     }
 
     private static void applyOrientation(Parent root) {

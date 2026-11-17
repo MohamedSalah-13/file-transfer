@@ -59,6 +59,16 @@ public final class I18n {
     }
 
     /**
+     * Translates an error code from the server or the client ({@code error.<code>} in the bundle).
+     * Unknown codes (e.g. from a newer server) are shown as the code plus its arguments.
+     */
+    public static String error(AppError e) {
+        String key = "error." + e.code();
+        if (BUNDLE.get().containsKey(key)) return get(key, e.args().toArray());
+        return e.args().isEmpty() ? e.code() : e.code() + " (" + String.join(", ", e.args()) + ")";
+    }
+
+    /**
      * Short, readable message time in the user's time zone, relative to today:
      * "09:30", "Yesterday, 09:30", "17 Nov, 09:30", or "17 Nov 2025, 09:30" for other years.
      * Falls back to the raw text if it is not an ISO-8601 instant.

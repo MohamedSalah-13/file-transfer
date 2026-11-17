@@ -35,6 +35,7 @@ Packages under `src/main/java/com/hamza/filetransfer/`:
   - **TRANSFER:** `HELLO_TRANSFER user token`. These are extra parallel sockets used for `DOWNLOAD`. The token is only valid while the issuing CONTROL socket is online.
 - **Write locking:** every write to a socket's output goes inside `synchronized (lock)`. The server writes to *other* users' CONTROL streams to push notifications, which is why `OnlineClient` carries `out` + `lock`.
 - **Responses are async on the client:** `ClientConnection.listenLoop` dispatches each server message to a callback via `Platform.runLater`. `SEND_OK` is ignored, and after sending, the UI simply re-requests the thread (`requestThread`) to refresh.
+- **Errors are codes, not text:** `ERROR` / `AUTH_FAILED` carry `<code> <argCount> <args...>` (codes in `shared.ErrorCode`; client-only codes in `client.AppError`). The client shows them through `I18n.error(...)`, so a new code needs an `error.<code>` entry in all three `messages*.properties`. English values with `{0}` args go through `MessageFormat`, so avoid apostrophes in them.
 
 ### Server storage layout (`server-storage/`)
 ```

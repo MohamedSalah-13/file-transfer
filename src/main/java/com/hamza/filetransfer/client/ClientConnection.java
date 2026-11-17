@@ -1,5 +1,6 @@
 package com.hamza.filetransfer.client;
 
+import com.hamza.filetransfer.shared.ErrorCode;
 import com.hamza.filetransfer.shared.Limits;
 import com.hamza.filetransfer.shared.Protocol;
 import com.hamza.filetransfer.shared.SafeNames;
@@ -33,7 +34,7 @@ public class ClientConnection implements Closeable {
     private volatile boolean running = true;
 
     // UI callbacks
-    private Consumer<String> onError = msg -> {
+    private Consumer<AppError> onError = err -> {
     };
     private Consumer<List<String>> onUsers = users -> {
     };
@@ -73,13 +74,13 @@ public class ClientConnection implements Closeable {
 
             String resp = in.readUTF();
             if (Protocol.HELLO_TAKEN.equals(resp)) {
-                throw new IllegalStateException("Username already online.");
+                throw new AppException(AppError.ALREADY_ONLINE);
             }
             if (Protocol.AUTH_FAILED.equals(resp) || Protocol.ERROR.equals(resp)) {
-                throw new IllegalStateException(in.readUTF());
+                throw new AppException(AppError.read(in));
             }
             if (!Protocol.HELLO_OK.equals(resp)) {
-                throw new IllegalStateException("Unexpected HELLO response: " + resp);
+                throw new AppException(AppError.PROTOCOL_ERROR, resp);
             }
             this.username = in.readUTF();
             this.sessionToken = in.readUTF();
@@ -113,8 +114,8 @@ public class ClientConnection implements Closeable {
                 String type = in.readUTF();
 
                 if (Protocol.ERROR.equals(type)) {
-                    String msg = in.readUTF();
-                    Platform.runLater(() -> onError.accept(msg));
+                    AppError err = AppError.read(in);
+                    Platform.runLater(() -> onError.accept(err));
 
                 } else if (Protocol.USERS.equals(type)) {
                     int n = in.readInt();
@@ -186,13 +187,13 @@ public class ClientConnection implements Closeable {
                     String messageId = in.readUTF();
 
                 } else {
-                    Platform.runLater(() -> onError.accept("Unknown server message: " + type));
+                    Platform.runLater(() -> onError.accept(new AppError(AppError.PROTOCOL_ERROR, type)));
                 }
             }
         } catch (EOFException ignored) {
-            if (running) Platform.runLater(() -> onError.accept("Disconnected"));
+            if (running) Platform.runLater(() -> onError.accept(new AppError(AppError.DISCONNECTED)));
         } catch (Exception e) {
-            if (running) Platform.runLater(() -> onError.accept("Disconnected: " + e.getMessage()));
+            if (running) Platform.runLater(() -> onError.accept(AppError.from(e)));
         }
     }
 
@@ -204,7 +205,7 @@ public class ClientConnection implements Closeable {
         }
     }
 
-    public void setOnError(Consumer<String> onError) {
+    public void setOnError(Consumer<AppError> onError) {
         this.onError = onError;
     }
 
@@ -237,7 +238,7 @@ public class ClientConnection implements Closeable {
     public void sendFile(String toUser, Path file, BiConsumer<Long, Long> onProgress) throws Exception {
         long size = Files.size(file);
         if (size > Limits.MAX_FILE_BYTES) {
-            throw new IllegalArgumentException("File exceeds 200MB limit.");
+            throw new AppException(ErrorCode.FILE_TOO_LARGE, String.valueOf(Limits.MAX_FILE_BYTES / (1024 * 1024)));
         }
 
         String fileName = file.getFileName().toString();
@@ -275,6 +276,7 @@ public class ClientConnection implements Closeable {
     public void startParallelDownload(String fileId, Path targetDirOrFile,
                                       BiConsumer<Long, Long> onProgress,
                                       Consumer<String> onStatus,
+                                      Consumer<AppError> onFailed,
                                       Consumer<Path> onSaved) {
 
         Thread t = new Thread(() -> {
@@ -290,11 +292,11 @@ public class ClientConnection implements Closeable {
                 dout.flush();
 
                 String helloResp = din.readUTF();
-                if (Protocol.AUTH_FAILED.equals(helloResp)) {
-                    throw new IOException(din.readUTF());
+                if (Protocol.AUTH_FAILED.equals(helloResp) || Protocol.ERROR.equals(helloResp)) {
+                    throw new AppException(AppError.read(din));
                 }
                 if (!Protocol.HELLO_OK.equals(helloResp)) {
-                    throw new IOException("Download channel HELLO failed: " + helloResp);
+                    throw new AppException(AppError.PROTOCOL_ERROR, helloResp);
                 }
 
                 dout.writeUTF(Protocol.DOWNLOAD);
@@ -303,18 +305,17 @@ public class ClientConnection implements Closeable {
 
                 String type = din.readUTF();
                 if (Protocol.ERROR.equals(type)) {
-                    String msg = din.readUTF();
-                    throw new IOException(msg);
+                    throw new AppException(AppError.read(din));
                 }
                 if (!Protocol.FILE.equals(type)) {
-                    throw new IOException("Unexpected response: " + type);
+                    throw new AppException(AppError.PROTOCOL_ERROR, type);
                 }
 
                 // Never trust the name sent by the server/sender: it could contain "..\\" or an absolute path.
                 String fileName = SafeNames.sanitizeFileName(din.readUTF());
                 long fileSize = din.readLong();
                 if (fileSize < 0 || fileSize > Limits.MAX_FILE_BYTES) {
-                    throw new IOException("Invalid file size: " + fileSize);
+                    throw new AppException(AppError.PROTOCOL_ERROR, "FILE size " + fileSize);
                 }
 
                 Path finalTarget;
@@ -357,7 +358,8 @@ public class ClientConnection implements Closeable {
                 });
 
             } catch (Exception ex) {
-                Platform.runLater(() -> onStatus.accept("FAILED: " + ex.getMessage()));
+                AppError err = AppError.from(ex);
+                Platform.runLater(() -> onFailed.accept(err)); // sets status FAILED + translated reason
             }
         }, "download-" + fileId);
 
@@ -391,8 +393,8 @@ public class ClientConnection implements Closeable {
 
     public void sendText(String toUser, String text) throws Exception {
         String t = text == null ? "" : text.trim();
-        if (t.isEmpty()) throw new IllegalArgumentException("Empty text");
-        if (t.length() > 2000) throw new IllegalArgumentException("Text too long (max 2000 chars)");
+        if (t.isEmpty()) throw new AppException(ErrorCode.EMPTY_TEXT);
+        if (t.length() > Limits.MAX_TEXT_CHARS) throw new AppException(ErrorCode.TEXT_TOO_LONG, String.valueOf(Limits.MAX_TEXT_CHARS));
 
         synchronized (writeLock) {
             out.writeUTF(Protocol.SEND_TEXT);

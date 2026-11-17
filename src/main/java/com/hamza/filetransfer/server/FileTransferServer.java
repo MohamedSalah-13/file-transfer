@@ -1,5 +1,6 @@
 package com.hamza.filetransfer.server;
 
+import com.hamza.filetransfer.shared.ErrorCode;
 import com.hamza.filetransfer.shared.Limits;
 import com.hamza.filetransfer.shared.Protocol;
 import com.hamza.filetransfer.shared.SafeNames;
@@ -74,8 +75,7 @@ public class FileTransferServer {
                 char[] password = in.readUTF().toCharArray();
 
                 if (!SafeNames.isValidUsername(requested)) {
-                    authFailed(out, lock, "Invalid username. Use 1-" + SafeNames.MAX_USERNAME_LENGTH
-                            + " letters, digits, '_' or '-'.");
+                    authFailed(out, lock, ErrorCode.INVALID_USERNAME, String.valueOf(SafeNames.MAX_USERNAME_LENGTH));
                     return;
                 }
 
@@ -87,14 +87,14 @@ public class FileTransferServer {
                 }
 
                 if (!auth.success()) {
-                    String reason = switch (auth.status()) {
-                        case WEAK_PASSWORD -> "New account: password must be "
-                                + AccountStore.MIN_PASSWORD_LENGTH + "-" + AccountStore.MAX_PASSWORD_LENGTH + " characters.";
-                        case LOCKED -> "Too many failed attempts. Try again in 30 seconds.";
-                        default -> "Wrong username or password.";
-                    };
                     Thread.sleep(500); // slow down online guessing
-                    authFailed(out, lock, reason);
+                    switch (auth.status()) {
+                        case WEAK_PASSWORD -> authFailed(out, lock, ErrorCode.WEAK_PASSWORD,
+                                String.valueOf(AccountStore.MIN_PASSWORD_LENGTH), String.valueOf(AccountStore.MAX_PASSWORD_LENGTH));
+                        case LOCKED -> authFailed(out, lock, ErrorCode.ACCOUNT_LOCKED,
+                                String.valueOf(AccountStore.LOCKOUT_SECONDS));
+                        default -> authFailed(out, lock, ErrorCode.WRONG_CREDENTIALS);
+                    }
                     return;
                 }
 
@@ -127,7 +127,7 @@ public class FileTransferServer {
                 OnlineClient owner = requested == null ? null : online.get(requested);
                 if (owner == null || !MessageDigest.isEqual(
                         owner.token().getBytes(StandardCharsets.UTF_8), token.getBytes(StandardCharsets.UTF_8))) {
-                    authFailed(out, lock, "Invalid or expired session.");
+                    authFailed(out, lock, ErrorCode.INVALID_SESSION);
                     return;
                 }
                 username = owner.username();
@@ -138,7 +138,7 @@ public class FileTransferServer {
                 }
 
             } else {
-                sendError(out, lock, "Expected HELLO");
+                sendError(out, lock, ErrorCode.BAD_HANDSHAKE);
                 return;
             }
 
@@ -150,7 +150,7 @@ public class FileTransferServer {
 
                 if (Protocol.LIST_USERS.equals(c)) {
                     if (!isControl) {
-                        sendError(out, lock, "LIST_USERS allowed only on CONTROL connection");
+                        sendError(out, lock, ErrorCode.CONTROL_ONLY, Protocol.LIST_USERS);
                         continue;
                     }
                     handleListUsers(out, lock);
@@ -163,14 +163,14 @@ public class FileTransferServer {
 
                 } else if (Protocol.LIST_MY_FILES.equals(c)) {
                     if (!isControl) {
-                        sendError(out, lock, "LIST_MY_FILES allowed only on CONTROL connection");
+                        sendError(out, lock, ErrorCode.CONTROL_ONLY, Protocol.LIST_MY_FILES);
                         continue;
                     }
                     handleListMyFiles(username, out, lock);
 
                 } else if (Protocol.LIST_THREAD.equals(c)) {
                     if (!isControl) {
-                        sendError(out, lock, "LIST_THREAD allowed only on CONTROL connection");
+                        sendError(out, lock, ErrorCode.CONTROL_ONLY, Protocol.LIST_THREAD);
                         continue;
                     }
                     handleListThread(username, in, out, lock);
@@ -179,7 +179,7 @@ public class FileTransferServer {
                     handleDownload(username, in, out, lock);
 
                 } else {
-                    sendError(out, lock, "Unknown command: " + c);
+                    sendError(out, lock, ErrorCode.UNKNOWN_COMMAND, c);
                 }
             }
 
@@ -225,13 +225,13 @@ public class FileTransferServer {
         long fileSize = in.readLong();
 
         if (fileSize < 0 || fileSize > Limits.MAX_FILE_BYTES) {
-            sendError(out, lock, "File too large. Max is 200MB.");
+            sendError(out, lock, ErrorCode.FILE_TOO_LARGE, String.valueOf(Limits.MAX_FILE_BYTES / (1024 * 1024)));
             throw new IOException("Rejected oversized file");
         }
 
         if (toUser == null) {
             discard(in, fileSize); // keep the stream in sync, then report
-            sendError(out, lock, "Unknown recipient.");
+            sendError(out, lock, ErrorCode.UNKNOWN_RECIPIENT);
             return;
         }
 
@@ -326,18 +326,18 @@ public class FileTransferServer {
         String text = in.readUTF();
 
         if (toUser == null) {
-            sendError(out, lock, "Unknown recipient.");
+            sendError(out, lock, ErrorCode.UNKNOWN_RECIPIENT);
             return;
         }
 
         if (text == null) text = "";
         text = text.trim();
         if (text.isEmpty()) {
-            sendError(out, lock, "Empty text");
+            sendError(out, lock, ErrorCode.EMPTY_TEXT);
             return;
         }
-        if (text.length() > 2000) {
-            sendError(out, lock, "Text too long (max 2000 chars)");
+        if (text.length() > Limits.MAX_TEXT_CHARS) {
+            sendError(out, lock, ErrorCode.TEXT_TOO_LONG, String.valueOf(Limits.MAX_TEXT_CHARS));
             return;
         }
 
@@ -373,7 +373,7 @@ public class FileTransferServer {
         String rawPeer = in.readUTF();
         String peer = knownPeer(rawPeer);
         if (peer == null) {
-            sendError(out, lock, "Unknown user.");
+            sendError(out, lock, ErrorCode.UNKNOWN_USER);
             return;
         }
 
@@ -508,7 +508,7 @@ public class FileTransferServer {
     private void handleDownload(String username, DataInputStream in, DataOutputStream out, Object lock) throws Exception {
         String fileId = in.readUTF();
         if (!SafeNames.isValidMessageId(fileId)) {
-            sendError(out, lock, "Not found");
+            sendError(out, lock, ErrorCode.FILE_NOT_FOUND);
             return;
         }
 
@@ -517,7 +517,7 @@ public class FileTransferServer {
         Path bin = SafeNames.resolveInside(inbox, fileId + ".bin");
 
         if (!Files.exists(meta) || !Files.exists(bin)) {
-            sendError(out, lock, "Not found");
+            sendError(out, lock, ErrorCode.FILE_NOT_FOUND);
             return;
         }
 
@@ -546,18 +546,21 @@ public class FileTransferServer {
         }
     }
 
-    private void authFailed(DataOutputStream out, Object lock, String reason) throws IOException {
-        synchronized (lock) {
-            out.writeUTF(Protocol.AUTH_FAILED);
-            out.writeUTF(reason);
-            out.flush();
-        }
+    private void authFailed(DataOutputStream out, Object lock, String code, String... args) throws IOException {
+        writeError(out, lock, Protocol.AUTH_FAILED, code, args);
     }
 
-    private void sendError(DataOutputStream out, Object lock, String message) throws IOException {
+    private void sendError(DataOutputStream out, Object lock, String code, String... args) throws IOException {
+        writeError(out, lock, Protocol.ERROR, code, args);
+    }
+
+    /** {@code <type> <code> <argCount> <arg...>}; the client translates the code (see {@link ErrorCode}). */
+    private static void writeError(DataOutputStream out, Object lock, String type, String code, String... args) throws IOException {
         synchronized (lock) {
-            out.writeUTF(Protocol.ERROR);
-            out.writeUTF(message);
+            out.writeUTF(type);
+            out.writeUTF(code);
+            out.writeInt(args.length);
+            for (String a : args) out.writeUTF(a);
             out.flush();
         }
     }

@@ -35,7 +35,8 @@ public class AccountStore {
     private static final int HASH_BITS = 256;
 
     private static final int MAX_FAILURES = 5;
-    private static final long LOCKOUT_MILLIS = 30_000;
+    public static final int LOCKOUT_SECONDS = 30;
+    private static final long LOCKOUT_MILLIS = LOCKOUT_SECONDS * 1000L;
 
     public enum Status { OK, REGISTERED, WRONG_PASSWORD, WEAK_PASSWORD, LOCKED }
 
