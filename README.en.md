@@ -97,13 +97,14 @@ server-storage/
 - Every username and file name that comes from the network goes through `SafeNames` before it is used in a path, so nothing can escape the storage folder (path traversal).
 - The client cleans up received file names and never overwrites an existing file.
 - 5 wrong logins in a row lock the account for 30 seconds.
-- **Traffic is not encrypted (no TLS)**, so passwords cross the network in clear text. Only use the app on a trusted network.
+- **All connections use TLS 1.3.** The server creates its own certificate on first start and shows its fingerprint in its window.
+- **Trust on first use (TOFU):** the first time a client connects to a server, it shows the server's fingerprint and asks you; compare it with the server window before you accept. After that the client remembers it, and if the certificate ever changes it blocks the connection and warns you (someone may be impersonating the server). The password is only sent after the server is verified.
 
 ## Known limitations
 
 - The port (`5000`) and the storage folder are hard-coded.
-- No connection encryption (TLS).
-- The server and clients should be about the same version, because the protocol has no version number.
+- The server and clients should be about the same version, because the protocol has no version number. Since 2.0.0 the connection is encrypted, so it does not work with 1.x servers or clients.
+- Deleting `server-storage/tls` creates a new certificate, and every client then refuses to connect until each user removes the server's line from `~/.file-transfer/known_servers.properties` and trusts it again.
 
 ## Documentation
 

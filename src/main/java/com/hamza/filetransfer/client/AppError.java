@@ -23,6 +23,12 @@ public record AppError(String code, List<String> args) {
     public static final String DISCONNECTED = "disconnected";
     /** The file got shorter while it was being sent. */
     public static final String FILE_CHANGED = "file_changed";
+    /** First connection to this server: the user must check and trust it. args: fingerprint */
+    public static final String UNTRUSTED_SERVER = "untrusted_server";
+    /** The server presents a different certificate than the trusted one. args: new fingerprint, trusted fingerprint, known-servers file */
+    public static final String SERVER_CERT_CHANGED = "server_cert_changed";
+    /** The TLS handshake failed (e.g. a 1.x server without TLS). args: detail */
+    public static final String TLS_FAILED = "tls_failed";
     public static final String INVALID_PORT = "invalid_port";
     /** args: unexpected message type */
     public static final String PROTOCOL_ERROR = "protocol_error";

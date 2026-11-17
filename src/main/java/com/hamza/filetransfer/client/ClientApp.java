@@ -42,6 +42,7 @@ public class ClientApp extends Application {
         return a.getUsername().compareToIgnoreCase(b.getUsername());
     };
     private ClientConnection conn;
+    private KnownServers knownServers; // servers whose TLS certificate this user trusted
     private String activePeer;
     private ListView<ChatMessage> chatListRef;
 
@@ -61,7 +62,8 @@ public class ClientApp extends Application {
     }
 
     @Override
-    public void start(Stage stage) {
+    public void start(Stage stage) throws Exception {
+        knownServers = new KnownServers(KnownServers.defaultLocation());
         I18n.setLanguage("en"); // Default language
         ThemeManager.applyTheme(ThemeManager.getThemes().getFirst());
 
@@ -357,27 +359,7 @@ public class ClientApp extends Application {
             userIndex.clear();
             chatTitle.textProperty().bind(I18n.bind("select_user"));
 
-            // Connecting and logging in wait on the network (and the server's password hashing),
-            // so they run off the FX thread to keep the window responsive.
-            btnConnect.setDisable(true);
-            setStatus(lblStatus, "status_connecting");
-            Thread t = new Thread(() -> {
-                try {
-                    ClientConnection c = new ClientConnection(host, port, user, password);
-                    Platform.runLater(() -> {
-                        btnConnect.setDisable(false);
-                        attachConnection(c, tfUser, lblStatus);
-                    });
-                } catch (Exception ex) {
-                    AppError err = AppError.from(ex);
-                    Platform.runLater(() -> {
-                        btnConnect.setDisable(false);
-                        setStatus(lblStatus, "status_connect_failed", err);
-                    });
-                }
-            }, "connect");
-            t.setDaemon(true);
-            t.start();
+            connectInBackground(stage, host, port, user, password, btnConnect, tfUser, lblStatus);
         });
 
         btnRefreshUsers.setOnAction(a -> {
@@ -427,6 +409,81 @@ public class ClientApp extends Application {
                     }
                 }
         );
+    }
+
+    /**
+     * Connects and logs in off the FX thread (network, TLS handshake and the server's password hashing
+     * all wait). On the first connection to a server, asks the user to trust its certificate and retries.
+     * {@code password} is wiped once the attempt is finished.
+     */
+    private void connectInBackground(Stage stage, String host, int port, String user, char[] password,
+                                     Button btnConnect, TextField tfUser, Label lblStatus) {
+        btnConnect.setDisable(true);
+        setStatus(lblStatus, "status_connecting");
+        Thread t = new Thread(() -> {
+            try {
+                // The constructor wipes the array it gets; keep ours for a retry after trusting the server.
+                ClientConnection c = new ClientConnection(host, port, user, password.clone(), knownServers);
+                Arrays.fill(password, '\0');
+                Platform.runLater(() -> {
+                    btnConnect.setDisable(false);
+                    attachConnection(c, tfUser, lblStatus);
+                });
+            } catch (Exception ex) {
+                AppError err = AppError.from(ex);
+                Platform.runLater(() -> {
+                    btnConnect.setDisable(false);
+                    if (AppError.UNTRUSTED_SERVER.equals(err.code())
+                            && askToTrust(stage, host, port, err.args().getFirst())) {
+                        connectInBackground(stage, host, port, user, password, btnConnect, tfUser, lblStatus);
+                        return;
+                    }
+                    Arrays.fill(password, '\0');
+                    setStatus(lblStatus, "status_connect_failed", err);
+                    if (AppError.SERVER_CERT_CHANGED.equals(err.code())) {
+                        Alert alert = new Alert(Alert.AlertType.ERROR, I18n.error(err), ButtonType.OK);
+                        alert.setTitle(I18n.get("cert_changed_title"));
+                        alert.setHeaderText(I18n.get("cert_changed_title"));
+                        showLocalized(stage, alert);
+                    }
+                });
+            }
+        }, "connect");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** Shows the server's fingerprint and asks the user to trust it. Saves it if they do. */
+    private boolean askToTrust(Stage stage, String host, int port, String fingerprint) {
+        ButtonType trust = new ButtonType(I18n.get("trust_button"), ButtonBar.ButtonData.OK_DONE);
+        ButtonType cancel = new ButtonType(I18n.get("cancel"), ButtonBar.ButtonData.CANCEL_CLOSE);
+
+        TextField fp = new TextField(fingerprint); // selectable, so it can be copied and compared
+        fp.setEditable(false);
+        fp.setNodeOrientation(NodeOrientation.LEFT_TO_RIGHT);
+        Label explain = new Label(I18n.get("trust_content"));
+        explain.setWrapText(true);
+
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION, "", trust, cancel);
+        alert.setTitle(I18n.get("trust_title"));
+        alert.setHeaderText(I18n.get("trust_header", host + ":" + port));
+        alert.getDialogPane().setContent(new VBox(10, explain, fp));
+        alert.getDialogPane().setPrefWidth(620);
+
+        if (showLocalized(stage, alert).orElse(cancel) != trust) return false;
+        try {
+            knownServers.trust(host, port, fingerprint);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static Optional<ButtonType> showLocalized(Stage owner, Alert alert) {
+        alert.initOwner(owner);
+        alert.getDialogPane().setNodeOrientation(
+                I18n.isRightToLeft() ? NodeOrientation.RIGHT_TO_LEFT : NodeOrientation.LEFT_TO_RIGHT);
+        return alert.showAndWait();
     }
 
     /** Wires a freshly logged-in connection to the UI, then starts it. Runs on the FX thread. */

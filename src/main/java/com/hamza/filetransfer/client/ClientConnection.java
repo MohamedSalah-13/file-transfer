@@ -6,9 +6,17 @@ import com.hamza.filetransfer.shared.Protocol;
 import com.hamza.filetransfer.shared.SafeNames;
 import javafx.application.Platform;
 
+import com.hamza.filetransfer.shared.Tls;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
 import java.io.*;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
@@ -62,22 +70,37 @@ public class ClientConnection implements Closeable {
     });
 
     private static final int CONNECT_TIMEOUT_MILLIS = 10_000;
+    /** Covers the TLS handshake and the login reply; a 1.x server without TLS never answers the handshake. */
+    private static final int HANDSHAKE_TIMEOUT_MILLIS = 10_000;
+
+    private final KnownServers knownServers;
+    private final SSLSocketFactory tlsSockets;
 
     private Consumer<IncomingTextEvent> onIncomingText = evt -> {
     };
 
     /**
-     * Opens the CONTROL connection and logs in. A new username is registered with this password
+     * Opens the TLS CONTROL connection and logs in. A new username is registered with this password
      * on first login; afterwards the same password is required.
+     * The server must present the certificate trusted in {@code knownServers} for {@code host:port};
+     * otherwise this throws an {@link AppException} with {@link AppError#UNTRUSTED_SERVER} (args: fingerprint)
+     * or {@link AppError#SERVER_CERT_CHANGED}, and the password is never sent.
      * Blocks on the network: call it off the FX thread. Set the callbacks, then call {@link #start()}.
      */
-    public ClientConnection(String host, int port, String username, char[] password) throws Exception {
+    public ClientConnection(String host, int port, String username, char[] password,
+                            KnownServers knownServers) throws Exception {
         this.host = host;
         this.port = port;
+        this.knownServers = knownServers;
 
-        this.socket = new Socket();
+        SSLContext tls = SSLContext.getInstance(Tls.PROTOCOL);
+        tls.init(null, new TrustManager[]{new TofuTrustManager(knownServers, host, port)}, null);
+        this.tlsSockets = tls.getSocketFactory();
+
+        Socket raw = new Socket();
         try {
-            socket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS);
+            raw.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS);
+            this.socket = secure(raw);
             this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
             this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
 
@@ -101,13 +124,40 @@ public class ClientConnection implements Closeable {
             }
             this.username = in.readUTF();
             this.sessionToken = in.readUTF();
+            socket.setSoTimeout(0); // from now on the listener waits for pushes indefinitely
         } catch (Exception e) {
-            socket.close();
+            raw.close(); // also closes the TLS socket layered on it
             requests.shutdownNow();
             throw e;
         } finally {
             Arrays.fill(password, '\0');
         }
+    }
+
+    /**
+     * Runs the TLS handshake on a connected socket. The read timeout stays at
+     * {@link #HANDSHAKE_TIMEOUT_MILLIS}; callers reset it once the login reply has arrived.
+     */
+    private SSLSocket secure(Socket raw) throws Exception {
+        SSLSocket s = (SSLSocket) tlsSockets.createSocket(raw, host, port, true);
+        Tls.restrict(s);
+        s.setSoTimeout(HANDSHAKE_TIMEOUT_MILLIS);
+        try {
+            s.startHandshake();
+        } catch (SSLException | SocketTimeoutException e) {
+            for (Throwable c = e; c != null; c = c.getCause()) {
+                if (c instanceof TofuTrustManager.UntrustedServerException u) {
+                    if (u.trustedFingerprint() == null) {
+                        throw new AppException(AppError.UNTRUSTED_SERVER, u.fingerprint());
+                    }
+                    throw new AppException(AppError.SERVER_CERT_CHANGED,
+                            u.fingerprint(), u.trustedFingerprint(), knownServers.location().toString());
+                }
+            }
+            // Typically a 1.x server without TLS, or something else listening on that port.
+            throw new AppException(AppError.TLS_FAILED, String.valueOf(e.getMessage()));
+        }
+        return s;
     }
 
     /** Starts reading server messages. Call once, after the callbacks are set, so no push is lost. */
@@ -330,7 +380,8 @@ public class ClientConnection implements Closeable {
         Socket s = new Socket();
         try {
             s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS);
-            TransferSocket t = new TransferSocket(s);
+            SSLSocket secured = secure(s); // same pinned certificate as the CONTROL connection
+            TransferSocket t = new TransferSocket(secured);
             t.out.writeUTF(Protocol.HELLO_TRANSFER);
             t.out.writeUTF(username);
             t.out.writeUTF(sessionToken);
@@ -341,6 +392,7 @@ public class ClientConnection implements Closeable {
                 throw new AppException(AppError.read(t.in));
             }
             if (!Protocol.HELLO_OK.equals(reply)) throw new AppException(AppError.PROTOCOL_ERROR, reply);
+            secured.setSoTimeout(0); // large transfers may pause; no read timeout from here on
             return t;
         } catch (Exception e) {
             s.close();

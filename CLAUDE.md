@@ -20,8 +20,8 @@ Windows (PowerShell); use `./mvnw` on Unix shells.
 
 - The `server` / `client` Maven profiles only switch `mainClass` (`server.ServerLauncher` / `client.ClientLauncher`). Without a profile `javafx:run` starts the server.
 - Tests (JUnit 5, Surefire 3.x) live in `src/test/java` in the same packages as the code, so Surefire patches them into the JPMS module and they can use package-private members.
-  - `SafeNamesTest`, `AccountStoreTest`: plain unit tests.
-  - `FileTransferServerTest`: starts a real server on a free port in a `@TempDir` and speaks the raw wire protocol, so a protocol change must update its `Wire` helper too.
+  - `SafeNamesTest`, `AccountStoreTest`, `KnownServersTest`: plain unit tests.
+  - `FileTransferServerTest`: starts a real TLS server on a free port in a `@TempDir` and speaks the raw wire protocol, so a protocol change must update its `Wire` helper too. Creating the test certificate runs `keytool` once per class.
   - `ClientConnectionTest`: runs `ClientConnection` against a scripted fake server (deterministic stalls and cut-offs). It starts the JavaFX toolkit (`Platform.startup`), so it needs a desktop session, not a headless CI box.
 - Runtime data goes to `server-storage/` in the working directory (git-ignored).
 
@@ -34,6 +34,9 @@ Packages under `src/main/java/com/hamza/filetransfer/`:
 - `HelloApplication` / `HelloController` / `Launcher` / `hello-view.fxml` are unused template leftovers.
 
 ### Wire protocol
+- **TLS 1.3 on every socket** (CONTROL and TRANSFER; settings in `shared.Tls`). Since 2.0.0 there is no plain-TCP mode, so 1.x clients and servers can't connect.
+  - **Server:** `ServerTls.loadOrCreate` makes a self-signed EC certificate with the JDK's `keytool` on first start and keeps it in `server-storage/tls/` (`server.p12` + password file). `ServerApp` shows its SHA-256 fingerprint. Deleting that folder creates a new identity, and every client will then refuse to connect until its user re-trusts it.
+  - **Client, trust on first use:** `TofuTrustManager` accepts only the fingerprint trusted for `host:port` in `KnownServers` (`~/.file-transfer/known_servers.properties`). An unknown server fails with `untrusted_server` (arg: fingerprint) before the password is sent; `ClientApp` shows the fingerprint, saves it if the user trusts it, and reconnects. A changed fingerprint fails with `server_cert_changed` and is blocked. A server without TLS gives `tls_failed`.
 - **Framing:** `DataInputStream`/`DataOutputStream` with `writeUTF` commands followed by positional fields. There is no length/version envelope, so **client and server must read and write exactly the same fields in the same order**. Any protocol change means editing `Protocol`, the server handler, and the `ClientConnection` reader together. The comments in `Protocol.java` document the handshake.
 - **Two kinds of socket per user:**
   - **CONTROL:** `HELLO user password` → `HELLO_OK canonicalName token`. One CONTROL socket per user (`online` map): a new successful login replaces and closes the old one, so a client that vanished without closing can't lock its user out (the server no longer sends `HELLO_TAKEN`). It carries listing commands, text messages (`SEND_TEXT`), and server pushes (`INCOMING_FILE`, `INCOMING_TEXT`).
@@ -59,9 +62,10 @@ users/<user>/threads/<peer>/<messageId>.meta  # chat history, one Properties fil
 - Build paths with `SafeNames.resolveInside(base, child)`, never a raw `Path.resolve`.
 - Usernames are NFC-normalized and case-insensitive. After login, always use the canonical name returned by `AccountStore.authenticate`.
 - The client sanitizes received file names and never overwrites an existing file when saving into a folder (`ClientConnection.uniqueTarget`).
-- Traffic is not encrypted (no TLS), so passwords cross the network in clear text.
+- All traffic is TLS 1.3. Clients pin the server certificate by fingerprint (trust on first use), so the first connection is only safe if the user compares the fingerprint with the server window. Never add a trust-all fallback.
 
 ### Known issues
 - `TransferSession` JavaFX properties are updated from server socket threads, not the FX thread.
 - `messages*.properties` must stay UTF-8: Java 9+ reads resource bundles as UTF-8. The Arabic file was once saved with a non-UTF-8 encoding, which turned every character into `?`. Client UI text goes through `client.I18n` (`I18n.bind(key)` for live bindings that follow language switches); add new strings to all three `messages*.properties` files.
 - The port (5000) and storage path are hard-coded in `ServerApp`; client defaults are in `ClientApp`.
+- The server certificate is created with `keytool` from `java.home/bin`. A jpackage/jlink runtime built with `--strip-native-commands` has no `keytool`, so a packaged server would need the certificate created another way.

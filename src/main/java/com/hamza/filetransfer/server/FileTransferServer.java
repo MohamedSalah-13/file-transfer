@@ -4,11 +4,16 @@ import com.hamza.filetransfer.shared.ErrorCode;
 import com.hamza.filetransfer.shared.Limits;
 import com.hamza.filetransfer.shared.Protocol;
 import com.hamza.filetransfer.shared.SafeNames;
+import com.hamza.filetransfer.shared.Tls;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLServerSocket;
+import javax.net.ssl.SSLSocket;
 import java.io.*;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.security.MessageDigest;
@@ -45,9 +50,13 @@ public class FileTransferServer {
         void write(DataOutputStream out) throws IOException;
     }
 
+    /** A client must finish the TLS handshake within this time, so idle connects don't hold a thread forever. */
+    private static final int HANDSHAKE_TIMEOUT_MILLIS = 15_000;
+
     private final int port;
     private final Path usersDir;
     private final AccountStore accounts;
+    private final SSLContext tls;
     private final SecureRandom random = new SecureRandom();
 
     // CONTROL connections only
@@ -55,10 +64,13 @@ public class FileTransferServer {
 
     private final Consumer<TransferSession> onNewSession;
 
-    public FileTransferServer(int port, Path usersDir, AccountStore accounts, Consumer<TransferSession> onNewSession) {
+    /** Every connection is TLS 1.3 with the server certificate in {@code tls} (see {@link ServerTls}). */
+    public FileTransferServer(int port, Path usersDir, AccountStore accounts, SSLContext tls,
+                              Consumer<TransferSession> onNewSession) {
         this.port = port;
         this.usersDir = usersDir.toAbsolutePath().normalize();
         this.accounts = accounts;
+        this.tls = tls;
         this.onNewSession = onNewSession;
     }
 
@@ -71,7 +83,8 @@ public class FileTransferServer {
     private void run() {
         try {
             Files.createDirectories(usersDir);
-            try (ServerSocket serverSocket = new ServerSocket(port)) {
+            try (SSLServerSocket serverSocket = (SSLServerSocket) tls.getServerSocketFactory().createServerSocket(port)) {
+                serverSocket.setEnabledProtocols(new String[]{Tls.PROTOCOL});
                 while (true) {
                     Socket s = serverSocket.accept();
                     new Thread(() -> handleClient(s), "client-" + s.getRemoteSocketAddress()).start();
@@ -90,6 +103,9 @@ public class FileTransferServer {
              DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()))) {
 
             socket.setKeepAlive(true); // let the OS notice peers that vanished without closing
+            socket.setSoTimeout(HANDSHAKE_TIMEOUT_MILLIS);
+            ((SSLSocket) socket).startHandshake();
+            socket.setSoTimeout(0);
             Object lock = new Object();
 
             // ===== Handshake =====
@@ -208,6 +224,10 @@ public class FileTransferServer {
 
         } catch (EOFException | SocketException ignored) {
             // client disconnected, or its socket was closed (replaced by a new login / dead push target)
+        } catch (SSLException | SocketTimeoutException e) {
+            // TLS handshake failed: a 1.x client without TLS, a client that has not trusted our
+            // certificate yet (it asks its user and reconnects), or one that never finished the handshake.
+            System.err.println("TLS handshake failed with " + socket.getRemoteSocketAddress() + ": " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
         } finally {

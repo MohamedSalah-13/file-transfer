@@ -1,12 +1,20 @@
 package com.hamza.filetransfer.server;
 
+import com.hamza.filetransfer.client.KnownServers;
+import com.hamza.filetransfer.client.TofuTrustManager;
 import com.hamza.filetransfer.shared.ErrorCode;
 import com.hamza.filetransfer.shared.Protocol;
+import com.hamza.filetransfer.shared.Tls;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -23,10 +31,20 @@ import static org.junit.jupiter.api.Assertions.*;
 class FileTransferServerTest {
 
     @TempDir
+    static Path tlsDir;
+    private static ServerTls serverTls;
+
+    @TempDir
     Path storage;
 
     private int port;
+    private SSLSocketFactory clientTls; // trusts exactly this server's certificate
     private final List<Wire> opened = new ArrayList<>();
+
+    @BeforeAll
+    static void createCertificate() throws Exception {
+        serverTls = ServerTls.loadOrCreate(tlsDir); // runs keytool once for the whole class
+    }
 
     @BeforeEach
     void startServer() throws Exception {
@@ -34,7 +52,34 @@ class FileTransferServerTest {
             port = probe.getLocalPort();
         }
         AccountStore accounts = new AccountStore(storage.resolve("accounts.properties"));
-        new FileTransferServer(port, storage.resolve("users"), accounts, session -> {}).startAsync();
+        new FileTransferServer(port, storage.resolve("users"), accounts, serverTls.context(), session -> {}).startAsync();
+
+        KnownServers known = new KnownServers(storage.resolve("known_servers.properties"));
+        known.trust("127.0.0.1", port, serverTls.fingerprint());
+        SSLContext context = SSLContext.getInstance(Tls.PROTOCOL);
+        context.init(null, new TrustManager[]{new TofuTrustManager(known, "127.0.0.1", port)}, null);
+        clientTls = context.getSocketFactory();
+    }
+
+    @Test
+    void theCertificateIsKeptAcrossRestarts() throws Exception {
+        assertEquals(serverTls.fingerprint(), ServerTls.loadOrCreate(tlsDir).fingerprint());
+    }
+
+    @Test
+    void plainTcpClientsWithoutTlsAreRefused() throws Exception {
+        Socket plain = connectRaw();
+        plain.setSoTimeout(10_000);
+        DataOutputStream out = new DataOutputStream(plain.getOutputStream());
+        out.writeUTF(Protocol.HELLO);
+        out.writeUTF("Ali");
+        out.writeUTF("secret1");
+        out.flush();
+
+        // The server treats the bytes as a broken TLS handshake and closes the socket: no HELLO_OK in clear text.
+        DataInputStream in = new DataInputStream(plain.getInputStream());
+        assertThrows(IOException.class, in::readUTF);
+        plain.close();
     }
 
     @AfterEach
@@ -199,18 +244,26 @@ class FileTransferServerTest {
 
     // ===== helpers =====
 
-    private Wire connect() throws Exception {
+    /** A plain TCP connection, retried until the server thread is listening. */
+    private Socket connectRaw() throws Exception {
         long deadline = System.currentTimeMillis() + 5000;
         while (true) {
             try {
-                Wire w = new Wire(new Socket("127.0.0.1", port));
-                opened.add(w);
-                return w;
-            } catch (java.net.ConnectException e) { // server thread not listening yet
+                return new Socket("127.0.0.1", port);
+            } catch (java.net.ConnectException e) {
                 if (System.currentTimeMillis() > deadline) throw e;
                 Thread.sleep(50);
             }
         }
+    }
+
+    /** A TLS connection that trusts this server's certificate, like a real client after trusting it. */
+    private Wire connect() throws Exception {
+        SSLSocket s = (SSLSocket) clientTls.createSocket(connectRaw(), "127.0.0.1", port, true);
+        s.startHandshake();
+        Wire w = new Wire(s);
+        opened.add(w);
+        return w;
     }
 
     private Wire transfer(String user, String token) throws Exception {

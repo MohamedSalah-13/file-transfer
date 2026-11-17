@@ -1,5 +1,6 @@
 package com.hamza.filetransfer.client;
 
+import com.hamza.filetransfer.server.ServerTls;
 import com.hamza.filetransfer.shared.ErrorCode;
 import com.hamza.filetransfer.shared.Protocol;
 import javafx.application.Platform;
@@ -27,24 +28,84 @@ import static org.junit.jupiter.api.Assertions.*;
 class ClientConnectionTest {
 
     @TempDir
+    static Path tlsDir;
+    private static ServerTls serverTls;
+
+    @TempDir
     Path dir;
 
     private FakeServer server;
+    private KnownServers known; // trusts the fake server's certificate, as after the first-use prompt
     private ClientConnection conn;
 
     @BeforeAll
-    static void startFx() {
+    static void startFx() throws Exception {
         try {
             Platform.startup(() -> {});
         } catch (IllegalStateException alreadyStarted) {
             // another test class started it
         }
         Platform.setImplicitExit(false);
+        serverTls = ServerTls.loadOrCreate(tlsDir);
     }
 
     @BeforeEach
     void startServer() throws IOException {
-        server = new FakeServer();
+        server = new FakeServer(serverTls);
+        known = new KnownServers(dir.resolve("known_servers.properties"));
+        known.trust("127.0.0.1", server.port(), serverTls.fingerprint());
+    }
+
+    @Test
+    void anUnknownServerMustBeTrustedFirstAndGetsNoPassword() throws Exception {
+        KnownServers empty = new KnownServers(dir.resolve("empty.properties"));
+        Future<ClientConnection> pending = connectAsync("carol", empty);
+        Peer control = server.next();
+
+        assertThrows(IOException.class, control::readHello, "handshake aborted before HELLO");
+        ExecutionException e = assertThrows(ExecutionException.class, () -> pending.get(5, TimeUnit.SECONDS));
+        AppError err = AppError.from(e.getCause());
+        assertEquals(AppError.UNTRUSTED_SERVER, err.code());
+        assertEquals(serverTls.fingerprint(), err.args().getFirst());
+
+        // What the UI does after the user accepts the fingerprint:
+        empty.trust("127.0.0.1", server.port(), err.args().getFirst());
+        conn = login("carol", "carol", empty);
+        assertEquals("carol", conn.getUsername());
+    }
+
+    @Test
+    void aChangedCertificateIsBlocked() throws Exception {
+        known.trust("127.0.0.1", server.port(), "AA:BB:CC");
+        Future<ClientConnection> pending = connectAsync("carol", known);
+        Peer control = server.next();
+
+        assertThrows(IOException.class, control::readHello, "no password sent to an impostor");
+        ExecutionException e = assertThrows(ExecutionException.class, () -> pending.get(5, TimeUnit.SECONDS));
+        AppError err = AppError.from(e.getCause());
+        assertEquals(AppError.SERVER_CERT_CHANGED, err.code());
+        assertEquals(List.of(serverTls.fingerprint(), "AA:BB:CC", known.location().toString()), err.args());
+    }
+
+    @Test
+    void aServerWithoutTlsFailsWithAClearError() throws Exception {
+        try (ServerSocket plain = new ServerSocket(0)) {
+            known.trust("127.0.0.1", plain.getLocalPort(), serverTls.fingerprint());
+            CompletableFuture<ClientConnection> pending = CompletableFuture.supplyAsync(() -> {
+                try {
+                    return new ClientConnection("127.0.0.1", plain.getLocalPort(), "carol", "pw".toCharArray(), known);
+                } catch (Exception e) {
+                    throw new CompletionException(e);
+                }
+            });
+            try (Socket s = plain.accept()) { // like a 1.x server answering in clear text
+                DataOutputStream out = new DataOutputStream(s.getOutputStream());
+                out.writeUTF(Protocol.ERROR);
+                out.flush();
+                ExecutionException e = assertThrows(ExecutionException.class, () -> pending.get(15, TimeUnit.SECONDS));
+                assertEquals(AppError.TLS_FAILED, AppError.from(e.getCause()).code());
+            }
+        }
     }
 
     @AfterEach
@@ -179,9 +240,10 @@ class ClientConnectionTest {
     @Test
     void aFailedDownloadLeavesNoPartialFile() throws Exception {
         conn = login("carol", "carol");
+        Path downloads = Files.createDirectory(dir.resolve("downloads"));
         CompletableFuture<AppError> failed = new CompletableFuture<>();
 
-        conn.startParallelDownload("id-1", dir, (d, t) -> {}, s -> {}, failed::complete,
+        conn.startParallelDownload("id-1", downloads, (d, t) -> {}, s -> {}, failed::complete,
                 saved -> fail("download should not succeed"));
 
         Peer transfer = server.next();
@@ -194,7 +256,7 @@ class ClientConnectionTest {
         transfer.socket.close();
 
         assertNotNull(failed.get(5, TimeUnit.SECONDS));
-        try (var files = Files.list(dir)) {
+        try (var files = Files.list(downloads)) {
             assertEquals(List.of(), files.toList(), "truncated report.pdf was deleted");
         }
     }
@@ -237,18 +299,26 @@ class ClientConnectionTest {
     }
 
     private Future<ClientConnection> connectAsync(String user) {
+        return connectAsync(user, known);
+    }
+
+    private Future<ClientConnection> connectAsync(String user, KnownServers trusted) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                return new ClientConnection("127.0.0.1", server.port(), user, "secret1".toCharArray());
+                return new ClientConnection("127.0.0.1", server.port(), user, "secret1".toCharArray(), trusted);
             } catch (Exception e) {
                 throw new CompletionException(e);
             }
         });
     }
 
-    /** Connects and answers the handshake with {@code canonical} and a fixed token. */
     private ClientConnection login(String user, String canonical) throws Exception {
-        Future<ClientConnection> pending = connectAsync(user);
+        return login(user, canonical, known);
+    }
+
+    /** Connects and answers the login with {@code canonical} and a fixed token. */
+    private ClientConnection login(String user, String canonical, KnownServers trusted) throws Exception {
+        Future<ClientConnection> pending = connectAsync(user, trusted);
         Peer control = server.next();
         control.readHello();
         control.out.writeUTF(Protocol.HELLO_OK);
@@ -259,12 +329,14 @@ class ClientConnectionTest {
         return pending.get(5, TimeUnit.SECONDS);
     }
 
+    /** Speaks TLS with the given certificate; the handshake runs when the test first reads from a {@link Peer}. */
     private static final class FakeServer implements Closeable {
-        private final ServerSocket serverSocket = new ServerSocket(0);
+        private final ServerSocket serverSocket;
         private final BlockingQueue<Socket> accepted = new LinkedBlockingQueue<>();
         Peer lastControl;
 
-        FakeServer() throws IOException {
+        FakeServer(ServerTls tls) throws IOException {
+            serverSocket = tls.context().getServerSocketFactory().createServerSocket(0);
             Thread t = new Thread(() -> {
                 try {
                     while (true) accepted.add(serverSocket.accept());
