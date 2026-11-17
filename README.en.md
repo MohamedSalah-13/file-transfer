@@ -1,0 +1,116 @@
+# File Transfer
+
+[العربية](README.md) | **English**
+
+![Version](https://img.shields.io/badge/version-1.1.0-blue) ![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white) ![JavaFX](https://img.shields.io/badge/JavaFX-21-1F6FB2) ![AtlantaFX](https://img.shields.io/badge/AtlantaFX-2.0-6C4AB6) ![Maven](https://img.shields.io/badge/Maven-wrapper-C71A36?logo=apachemaven&logoColor=white) ![Sockets](https://img.shields.io/badge/Sockets-client--server-555555) ![License](https://img.shields.io/badge/License-MIT-green)
+
+A JavaFX app for sending files and chatting between computers on a local network (LAN), like "WhatsApp for files". One server and any number of clients talk directly over TCP sockets. No internet connection and no database are needed.
+
+## Features
+
+### Chat and files
+- **Text chat and file sending** between users. The server keeps the history of every conversation.
+- **Instant notifications**: the server pushes new messages and files to the recipient as soon as they arrive.
+- **Parallel transfers**: each upload or download opens its own connection, so it never blocks the chat, and several transfers can run at once.
+- **Transfers panel**: shows the status of every upload and download, and why it failed if it did. The panel can be hidden.
+- Limits: **200 MB** per file and **2000 characters** per text message.
+
+### Interface
+- **Smart user list**: unread counts, a preview of the last message, search, and sorting by unread first, then by latest activity.
+- **Readable times** in chat bubbles and in the sidebar: just the time for today's messages, then "Yesterday", then the date. Hovering over a message's time shows the full date, and times update on their own after midnight.
+- **Arabic and English UI**, switchable while the app is running, with right-to-left layout for Arabic.
+- **Translated error messages**: the server sends only an error code, and the client shows it in the UI language.
+- **Several themes** from AtlantaFX: Primer, Nord and Cupertino (light and dark), and Dracula.
+- **Server window** with a table of transfers and the progress of each one.
+
+### Accounts
+- The first login with a new name registers the account. Passwords are stored as PBKDF2 hashes.
+- Usernames are case-insensitive (`Ali` and `ali` are the same account) and may contain Arabic letters.
+- One session per user: logging in from a new device closes the old session, so a device that dropped off the network can't lock its owner out.
+
+## Requirements
+
+- JDK 21
+- No Maven install needed: the project includes the Maven Wrapper (`mvnw` / `mvnw.cmd`).
+
+## Quick start
+
+```powershell
+.\mvnw.cmd -Pserver javafx:run     # start the server (listens on port 5000)
+.\mvnw.cmd -Pclient javafx:run     # start a client (run several in separate terminals)
+```
+
+On Linux or macOS use `./mvnw` instead of `.\mvnw.cmd`.
+
+Full details (client fields, accounts, network and firewall settings) are in [docs/RUNNING.md](docs/RUNNING.md) (Arabic).
+
+## Tests
+
+```powershell
+.\mvnw.cmd test                                  # all tests (JUnit 5)
+.\mvnw.cmd test -Dtest=FileTransferServerTest    # one test class
+```
+
+| Test | What it covers |
+|---|---|
+| `SafeNamesTest` | Name validation and path safety |
+| `AccountStoreTest` | Registration, passwords, case-insensitive names and account lockout |
+| `FileTransferServerTest` | A real server on a free port, driven over the raw protocol: uploads and downloads, tokens, session takeover and errors |
+| `ClientConnectionTest` | `ClientConnection` against a scripted fake server (deliberate stalls and cut-offs) |
+
+`ClientConnectionTest` starts JavaFX, so it needs a desktop session. It won't run on a headless CI machine.
+
+## Project structure
+
+```
+src/main/java/com/hamza/filetransfer/
+├── shared/   # Protocol (wire commands), ErrorCode (error codes), Limits, SafeNames (name and path checks)
+├── server/   # FileTransferServer (socket logic), AccountStore (accounts), ServerApp (UI)
+└── client/   # ClientConnection (networking), ClientApp (the whole client UI, built in code), I18n (translations)
+```
+
+UI text lives in `src/main/resources/messages*.properties` (English, Arabic and the default bundle). These files must stay UTF-8.
+
+### How the connection works
+
+The protocol is a simple binary format over `DataInputStream` / `DataOutputStream`: a command (`writeUTF`) followed by its fields in a fixed order. Each user has two kinds of connection:
+
+- **CONTROL**: one per user. It starts with `HELLO user password`, and the server answers `HELLO_OK` with the account's canonical name and a session token. It is used for listing users and conversations, sending text messages and receiving notifications.
+- **TRANSFER**: one extra connection per file upload or download. It starts with `HELLO_TRANSFER user token`. The token is only valid while the CONTROL connection is open.
+
+Errors are sent as `ERROR <code> <argCount> <args...>`. The codes are defined in `shared/ErrorCode.java`.
+
+### Server storage
+
+There is no database. Everything is saved in a `server-storage/` folder inside the working directory:
+
+```
+server-storage/
+├── accounts.properties                            # accounts (password hashes)
+└── users/<user>/
+    ├── inbox/<messageId>.bin | .meta              # received files and their metadata
+    └── threads/<peer>/<messageId>.meta            # chat history, one file per message
+```
+
+## Security
+
+- Every username and file name that comes from the network goes through `SafeNames` before it is used in a path, so nothing can escape the storage folder (path traversal).
+- The client cleans up received file names and never overwrites an existing file.
+- 5 wrong logins in a row lock the account for 30 seconds.
+- **Traffic is not encrypted (no TLS)**, so passwords cross the network in clear text. Only use the app on a trusted network.
+
+## Known limitations
+
+- The port (`5000`) and the storage folder are hard-coded.
+- No connection encryption (TLS).
+- The server and clients should be about the same version, because the protocol has no version number.
+
+## Documentation
+
+- [docs/RUNNING.md](docs/RUNNING.md): detailed run guide (Arabic).
+- [CLAUDE.md](CLAUDE.md): developer notes on the architecture, the protocol and the security rules.
+- `docs/1.md` to `docs/15.md`: the step-by-step design notes the project was built from (Arabic).
+
+## License
+
+Released under the [MIT](LICENSE) license.
