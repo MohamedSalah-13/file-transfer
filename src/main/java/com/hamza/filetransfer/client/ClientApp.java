@@ -458,8 +458,12 @@ public class ClientApp extends Application {
         ButtonType trust = new ButtonType(I18n.get("trust_button"), ButtonBar.ButtonData.OK_DONE);
         ButtonType cancel = new ButtonType(I18n.get("cancel"), ButtonBar.ButtonData.CANCEL_CLOSE);
 
-        TextField fp = new TextField(fingerprint); // selectable, so it can be copied and compared
+        // Read-only but selectable, so it can be copied; two monospace lines so all 32 bytes are visible.
+        TextArea fp = new TextArea(fingerprint);
         fp.setEditable(false);
+        fp.setWrapText(true);
+        fp.setPrefRowCount(2);
+        fp.setStyle("-fx-font-family: monospace;");
         fp.setNodeOrientation(NodeOrientation.LEFT_TO_RIGHT);
         Label explain = new Label(I18n.get("trust_content"));
         explain.setWrapText(true);

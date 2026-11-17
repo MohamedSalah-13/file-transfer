@@ -50,7 +50,10 @@ public class FileTransferServer {
         void write(DataOutputStream out) throws IOException;
     }
 
-    /** A client must finish the TLS handshake within this time, so idle connects don't hold a thread forever. */
+    /**
+     * A client must finish the TLS handshake and send its login within this time, so connections
+     * that never log in don't hold a thread forever. Logged-in sockets have no read timeout.
+     */
     private static final int HANDSHAKE_TIMEOUT_MILLIS = 15_000;
 
     private final int port;
@@ -105,7 +108,6 @@ public class FileTransferServer {
             socket.setKeepAlive(true); // let the OS notice peers that vanished without closing
             socket.setSoTimeout(HANDSHAKE_TIMEOUT_MILLIS);
             ((SSLSocket) socket).startHandshake();
-            socket.setSoTimeout(0);
             Object lock = new Object();
 
             // ===== Handshake =====
@@ -180,6 +182,7 @@ public class FileTransferServer {
                 sendError(out, lock, ErrorCode.BAD_HANDSHAKE);
                 return;
             }
+            socket.setSoTimeout(0); // logged in: CONTROL waits for commands, TRANSFER may pause mid-file
 
             boolean isControl = me != null;
 
@@ -226,8 +229,9 @@ public class FileTransferServer {
             // client disconnected, or its socket was closed (replaced by a new login / dead push target)
         } catch (SSLException | SocketTimeoutException e) {
             // TLS handshake failed: a 1.x client without TLS, a client that has not trusted our
-            // certificate yet (it asks its user and reconnects), or one that never finished the handshake.
-            System.err.println("TLS handshake failed with " + socket.getRemoteSocketAddress() + ": " + e.getMessage());
+            // certificate yet (it asks its user and reconnects), or one that never finished the handshake
+            // or never sent its login.
+            System.err.println("TLS handshake or login failed with " + socket.getRemoteSocketAddress() + ": " + e.getMessage());
         } catch (Exception e) {
             e.printStackTrace();
         } finally {

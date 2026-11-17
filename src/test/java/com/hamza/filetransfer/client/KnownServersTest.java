@@ -34,6 +34,21 @@ class KnownServersTest {
     }
 
     @Test
+    void twoClientWindowsKeepEachOthersTrust() throws Exception {
+        Path file = dir.resolve("k.properties");
+        KnownServers first = new KnownServers(file);
+        KnownServers second = new KnownServers(file); // opened before the first one trusted anything
+
+        first.trust("server-a", 5000, "AA:AA");
+        assertEquals("AA:AA", second.fingerprint("server-a", 5000), "sees the other window's decision");
+
+        second.trust("server-b", 5000, "BB:BB");
+        KnownServers reloaded = new KnownServers(file);
+        assertEquals("AA:AA", reloaded.fingerprint("server-a", 5000), "not overwritten by the other window");
+        assertEquals("BB:BB", reloaded.fingerprint("server-b", 5000));
+    }
+
+    @Test
     void trustingAgainReplacesTheFingerprint() throws Exception {
         KnownServers known = new KnownServers(dir.resolve("k.properties"));
         known.trust("host", 5000, "AA:BB");

@@ -67,6 +67,15 @@ class FileTransferServerTest {
     }
 
     @Test
+    void aPasswordFileWithoutAKeystoreStartsOver(@TempDir Path dir) throws Exception {
+        // what a crash between saving the password and creating the certificate leaves behind
+        Files.writeString(dir.resolve("server.p12.password"), "left-over");
+        ServerTls created = ServerTls.loadOrCreate(dir);
+        assertTrue(Files.exists(dir.resolve("server.p12")));
+        assertEquals(created.fingerprint(), ServerTls.loadOrCreate(dir).fingerprint());
+    }
+
+    @Test
     void plainTcpClientsWithoutTlsAreRefused() throws Exception {
         Socket plain = connectRaw();
         plain.setSoTimeout(10_000);

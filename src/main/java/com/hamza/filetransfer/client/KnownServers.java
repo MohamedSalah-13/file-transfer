@@ -21,6 +21,15 @@ public final class KnownServers {
 
     public KnownServers(Path file) throws IOException {
         this.file = file;
+        reload();
+    }
+
+    /**
+     * Re-reads the file, so several client windows of the same OS user see each other's
+     * trust decisions and don't overwrite them when saving.
+     */
+    private void reload() throws IOException {
+        props.clear();
         if (Files.exists(file)) {
             try (Reader r = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
                 props.load(r);
@@ -36,13 +45,18 @@ public final class KnownServers {
         return file;
     }
 
-    /** The trusted fingerprint for this server, or null if it was never trusted. */
-    public synchronized String fingerprint(String host, int port) {
+    /**
+     * The trusted fingerprint for this server, or null if it was never trusted.
+     * Throws if the file can't be read, so an unreadable file never looks like "first connection".
+     */
+    public synchronized String fingerprint(String host, int port) throws IOException {
+        reload();
         return props.getProperty(key(host, port));
     }
 
     /** Remembers (or replaces) the fingerprint for this server. */
     public synchronized void trust(String host, int port, String fingerprint) throws IOException {
+        reload();
         props.setProperty(key(host, port), fingerprint);
         Path parent = file.toAbsolutePath().getParent();
         Files.createDirectories(parent);

@@ -4,6 +4,7 @@ import com.hamza.filetransfer.shared.Tls;
 
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.X509ExtendedTrustManager;
+import java.io.IOException;
 import java.net.Socket;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
@@ -46,7 +47,12 @@ public final class TofuTrustManager extends X509ExtendedTrustManager {
     private void verify(X509Certificate[] chain) throws CertificateException {
         if (chain == null || chain.length == 0) throw new CertificateException("Server sent no certificate");
         String presented = Tls.fingerprint(chain[0]);
-        String trusted = knownServers.fingerprint(host, port);
+        String trusted;
+        try {
+            trusted = knownServers.fingerprint(host, port);
+        } catch (IOException e) {
+            throw new CertificateException("Cannot read " + knownServers.location(), e);
+        }
         if (!presented.equals(trusted)) throw new UntrustedServerException(presented, trusted);
     }
 

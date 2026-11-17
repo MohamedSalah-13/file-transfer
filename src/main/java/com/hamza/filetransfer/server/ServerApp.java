@@ -12,6 +12,7 @@ import javafx.scene.control.cell.ProgressBarTableCell;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
@@ -55,6 +56,7 @@ public class ServerApp extends Application {
         fingerprint.setEditable(false);
         fingerprint.setPrefColumnCount(70);
         Label fingerprintLabel = new Label("Certificate fingerprint (SHA-256):");
+        fingerprintLabel.setMinWidth(Region.USE_PREF_SIZE); // never cut to "Certifica..."
         HBox fingerprintRow = new HBox(8, fingerprintLabel, fingerprint);
         fingerprintRow.setAlignment(Pos.CENTER_LEFT);
         HBox.setHgrow(fingerprint, Priority.ALWAYS);

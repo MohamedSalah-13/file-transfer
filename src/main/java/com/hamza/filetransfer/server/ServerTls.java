@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.KeyStore;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
@@ -40,8 +41,12 @@ public record ServerTls(SSLContext context, String fingerprint) {
             byte[] random = new byte[24];
             new SecureRandom().nextBytes(random);
             String password = Base64.getUrlEncoder().withoutPadding().encodeToString(random);
+            // Password file first: if we stop half-way, the next start sees no keystore and simply
+            // starts over, instead of finding a keystore whose password was never saved.
+            Path tmp = Files.createTempFile(dir, PASSWORD_FILE, ".tmp");
+            Files.writeString(tmp, password, StandardCharsets.UTF_8);
+            Files.move(tmp, passwordFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             generate(keystore, password);
-            Files.writeString(passwordFile, password, StandardCharsets.UTF_8);
         }
 
         char[] password = Files.readString(passwordFile, StandardCharsets.UTF_8).trim().toCharArray();
