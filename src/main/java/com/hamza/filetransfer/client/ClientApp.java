@@ -58,6 +58,8 @@ public class ClientApp extends Application {
         TextField tfHost = new TextField("127.0.0.1");
         TextField tfPort = new TextField("5000");
         TextField tfUser = new TextField("user1");
+        PasswordField pfPassword = new PasswordField();
+        pfPassword.setPromptText("Password (new user: choose one)");
         Button btnConnect = new Button("Connect");
 
         Label lblStatus = new Label("Not connected");
@@ -86,18 +88,20 @@ public class ClientApp extends Application {
 
         Button btnToggleRight = new Button("Hide Transfers");
 
+        Region spacer = new Region();
         HBox top = new HBox(
                 10,
                 new Label(bundle.getString("host")), tfHost,
                 new Label(bundle.getString("port")), tfPort,
                 new Label(bundle.getString("user")), tfUser,
+                pfPassword,
                 btnConnect, lblStatus,
-                new Region(),
+                spacer,
                 new Label("Lang:"), langPicker,
                 new Label("Theme:"), themePicker,
                 btnToggleRight
         );
-        HBox.setHgrow(top.getChildren().get(7), Priority.ALWAYS); // Region spacer
+        HBox.setHgrow(spacer, Priority.ALWAYS);
         top.setAlignment(Pos.CENTER_LEFT);
         top.getStyleClass().add("topbar");
 
@@ -302,8 +306,16 @@ public class ClientApp extends Application {
         // connect logic: add thread callbacks
         btnConnect.setOnAction(a -> {
             try {
-                conn = new ClientConnection(tfHost.getText().trim(), Integer.parseInt(tfPort.getText().trim()), tfUser.getText().trim());
-                lblStatus.setText("Connected");
+                if (conn != null) { // reconnect: drop the old session first
+                    try { conn.close(); } catch (Exception ignored) { }
+                    conn = null;
+                }
+                char[] password = pfPassword.getText().toCharArray();
+                pfPassword.clear();
+                conn = new ClientConnection(tfHost.getText().trim(), Integer.parseInt(tfPort.getText().trim()),
+                        tfUser.getText().trim(), password);
+                tfUser.setText(conn.getUsername());
+                lblStatus.setText("Connected as " + conn.getUsername());
 
                 conn.setOnError(msg -> lblStatus.setText("Error: " + msg));
                 conn.setOnUsers(this::applyUsers);

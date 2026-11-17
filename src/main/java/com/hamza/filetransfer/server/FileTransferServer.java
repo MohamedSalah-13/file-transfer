@@ -2,11 +2,15 @@ package com.hamza.filetransfer.server;
 
 import com.hamza.filetransfer.shared.Limits;
 import com.hamza.filetransfer.shared.Protocol;
+import com.hamza.filetransfer.shared.SafeNames;
 
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -14,19 +18,22 @@ import java.util.function.Consumer;
 
 public class FileTransferServer {
 
-    public record OnlineClient(String username, DataOutputStream out, Object lock) {}
+    public record OnlineClient(String username, String token, DataOutputStream out, Object lock) {}
 
     private final int port;
     private final Path usersDir;
+    private final AccountStore accounts;
+    private final SecureRandom random = new SecureRandom();
 
     // CONTROL connections only
     private final Map<String, OnlineClient> online = new ConcurrentHashMap<>();
 
     private final Consumer<TransferSession> onNewSession;
 
-    public FileTransferServer(int port, Path usersDir, Consumer<TransferSession> onNewSession) {
+    public FileTransferServer(int port, Path usersDir, AccountStore accounts, Consumer<TransferSession> onNewSession) {
         this.port = port;
-        this.usersDir = usersDir;
+        this.usersDir = usersDir.toAbsolutePath().normalize();
+        this.accounts = accounts;
         this.onNewSession = onNewSession;
     }
 
@@ -52,63 +59,92 @@ public class FileTransferServer {
 
     private void handleClient(Socket socket) {
         String username = null;
-        boolean isControl = false;
+        OnlineClient me = null;
         try (socket;
              DataInputStream in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
              DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()))) {
 
             Object lock = new Object();
 
-            // 1) HELLO
+            // ===== Handshake =====
             String cmd = in.readUTF();
-            if (!Protocol.HELLO.equals(cmd)) {
-                sendError(out, lock, "Expected HELLO");
-                return;
-            }
-            username = in.readUTF().trim();
-            if (username.isBlank()) {
-                sendError(out, lock, "Empty username");
-                return;
-            }
+            if (Protocol.HELLO.equals(cmd)) {
+                // CONTROL connection: username + password
+                String requested = SafeNames.normalizeUsername(in.readUTF());
+                char[] password = in.readUTF().toCharArray();
 
-            Files.createDirectories(userInboxDir(username));
+                if (!SafeNames.isValidUsername(requested)) {
+                    authFailed(out, lock, "Invalid username. Use 1-" + SafeNames.MAX_USERNAME_LENGTH
+                            + " letters, digits, '_' or '-'.");
+                    return;
+                }
 
-            synchronized (lock) {
-                out.writeUTF(Protocol.HELLO_OK);
-                out.flush();
-            }
+                AccountStore.Result auth;
+                try {
+                    auth = accounts.authenticate(requested, password);
+                } finally {
+                    Arrays.fill(password, '\0');
+                }
 
-            // 2) MODE
-            String modeCmd = in.readUTF();
-            if (!Protocol.MODE.equals(modeCmd)) {
-                sendError(out, lock, "Expected MODE after HELLO");
-                return;
-            }
-            String mode = in.readUTF();
+                if (!auth.success()) {
+                    String reason = switch (auth.status()) {
+                        case WEAK_PASSWORD -> "New account: password must be "
+                                + AccountStore.MIN_PASSWORD_LENGTH + "-" + AccountStore.MAX_PASSWORD_LENGTH + " characters.";
+                        case LOCKED -> "Too many failed attempts. Try again in 30 seconds.";
+                        default -> "Wrong username or password.";
+                    };
+                    Thread.sleep(500); // slow down online guessing
+                    authFailed(out, lock, reason);
+                    return;
+                }
 
-            if (Protocol.MODE_CONTROL.equals(mode)) {
-                isControl = true;
+                username = auth.username();
+                Files.createDirectories(userInboxDir(username));
 
                 // Only one CONTROL connection per user
-                OnlineClient prev = online.putIfAbsent(username, new OnlineClient(username, out, lock));
-                if (prev != null) {
+                OnlineClient candidate = new OnlineClient(username, newToken(), out, lock);
+                if (online.putIfAbsent(username, candidate) != null) {
                     synchronized (lock) {
                         out.writeUTF(Protocol.HELLO_TAKEN);
                         out.flush();
                     }
                     return;
                 }
+                me = candidate;
 
-            } else if (Protocol.MODE_TRANSFER.equals(mode)) {
-                // TRANSFER connections are allowed in parallel. Do NOT register in 'online'.
-                isControl = false;
+                synchronized (lock) {
+                    out.writeUTF(Protocol.HELLO_OK);
+                    out.writeUTF(username);
+                    out.writeUTF(me.token());
+                    out.flush();
+                }
+
+            } else if (Protocol.HELLO_TRANSFER.equals(cmd)) {
+                // TRANSFER connection: must present the token of a live CONTROL session
+                String requested = SafeNames.normalizeUsername(in.readUTF());
+                String token = in.readUTF();
+
+                OnlineClient owner = requested == null ? null : online.get(requested);
+                if (owner == null || !MessageDigest.isEqual(
+                        owner.token().getBytes(StandardCharsets.UTF_8), token.getBytes(StandardCharsets.UTF_8))) {
+                    authFailed(out, lock, "Invalid or expired session.");
+                    return;
+                }
+                username = owner.username();
+
+                synchronized (lock) {
+                    out.writeUTF(Protocol.HELLO_OK);
+                    out.flush();
+                }
 
             } else {
-                sendError(out, lock, "Unknown MODE: " + mode);
+                sendError(out, lock, "Expected HELLO");
                 return;
             }
 
-            // 3) Loop commands
+            boolean isControl = me != null;
+
+            // ===== Command loop =====
             while (true) {
                 String c = in.readUTF();
 
@@ -152,10 +188,23 @@ public class FileTransferServer {
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
-            if (username != null && isControl) {
-                online.remove(username);
+            if (me != null) {
+                online.remove(me.username(), me); // only remove our own entry
             }
         }
+    }
+
+    private String newToken() {
+        byte[] b = new byte[32];
+        random.nextBytes(b);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+    }
+
+    /** Validates a peer username from the client; returns null if invalid or no such account. */
+    private String knownPeer(String raw) {
+        String peer = SafeNames.normalizeUsername(raw);
+        if (!SafeNames.isValidUsername(peer) || !accounts.exists(peer)) return null;
+        return peer;
     }
 
     private void handleListUsers(DataOutputStream out, Object lock) throws IOException {
@@ -171,13 +220,19 @@ public class FileTransferServer {
     }
 
     private void handleSendFile(String fromUser, DataInputStream in, DataOutputStream out, Object lock) throws Exception {
-        String toUser = in.readUTF().trim();
-        String fileName = in.readUTF();
+        String toUser = knownPeer(in.readUTF());
+        String fileName = SafeNames.sanitizeFileName(in.readUTF());
         long fileSize = in.readLong();
 
         if (fileSize < 0 || fileSize > Limits.MAX_FILE_BYTES) {
             sendError(out, lock, "File too large. Max is 200MB.");
             throw new IOException("Rejected oversized file");
+        }
+
+        if (toUser == null) {
+            discard(in, fileSize); // keep the stream in sync, then report
+            sendError(out, lock, "Unknown recipient.");
+            return;
         }
 
         String messageId = UUID.randomUUID().toString();
@@ -191,8 +246,8 @@ public class FileTransferServer {
         Path inbox = userInboxDir(toUser);
         Files.createDirectories(inbox);
 
-        Path bin = inbox.resolve(messageId + ".bin");
-        Path metaInbox = inbox.resolve(messageId + ".meta");
+        Path bin = SafeNames.resolveInside(inbox, messageId + ".bin");
+        Path metaInbox = SafeNames.resolveInside(inbox, messageId + ".meta");
 
         try (OutputStream fileOut = Files.newOutputStream(bin, StandardOpenOption.CREATE_NEW)) {
             byte[] buffer = new byte[Limits.BUFFER_SIZE];
@@ -207,6 +262,10 @@ public class FileTransferServer {
 
                 session.setDoneBytes(received);
             }
+        } catch (IOException e) {
+            Files.deleteIfExists(bin); // don't leave half-written files behind
+            session.setStatus("FAILED");
+            throw e;
         }
 
         session.setStatus("STORED");
@@ -214,15 +273,15 @@ public class FileTransferServer {
         long epochMillis = ts.toEpochMilli();
 
         // inbox meta (recipient)
-        String inboxMeta =
-                "messageId=" + messageId + "\n" +
-                        "fromUser=" + fromUser + "\n" +
-                        "toUser=" + toUser + "\n" +
-                        "fileName=" + fileName + "\n" +
-                        "fileSize=" + fileSize + "\n" +
-                        "timestamp=" + ts + "\n" +
-                        "timestampMillis=" + epochMillis + "\n";
-        Files.writeString(metaInbox, inboxMeta, StandardOpenOption.CREATE_NEW);
+        Properties inboxMeta = new Properties();
+        inboxMeta.setProperty("messageId", messageId);
+        inboxMeta.setProperty("fromUser", fromUser);
+        inboxMeta.setProperty("toUser", toUser);
+        inboxMeta.setProperty("fileName", fileName);
+        inboxMeta.setProperty("fileSize", Long.toString(fileSize));
+        inboxMeta.setProperty("timestamp", ts.toString());
+        inboxMeta.setProperty("timestampMillis", Long.toString(epochMillis));
+        writeMeta(metaInbox, inboxMeta);
 
         // Thread meta for recipient (IN)
         writeThreadMeta(toUser, fromUser, messageId, "IN", fromUser, toUser, fileName, fileSize, ts.toString(), epochMillis, true);
@@ -252,9 +311,24 @@ public class FileTransferServer {
         session.setStatus("DONE");
     }
 
+    private static void discard(DataInputStream in, long bytes) throws IOException {
+        byte[] buffer = new byte[Limits.BUFFER_SIZE];
+        long left = bytes;
+        while (left > 0) {
+            int read = in.read(buffer, 0, (int) Math.min(buffer.length, left));
+            if (read == -1) throw new EOFException("Disconnected during upload");
+            left -= read;
+        }
+    }
+
     private void handleSendText(String fromUser, DataInputStream in, DataOutputStream out, Object lock) throws Exception {
-        String toUser = in.readUTF().trim();
+        String toUser = knownPeer(in.readUTF());
         String text = in.readUTF();
+
+        if (toUser == null) {
+            sendError(out, lock, "Unknown recipient.");
+            return;
+        }
 
         if (text == null) text = "";
         text = text.trim();
@@ -296,18 +370,20 @@ public class FileTransferServer {
     }
 
     private void handleListThread(String username, DataInputStream in, DataOutputStream out, Object lock) throws Exception {
-        String peer = in.readUTF().trim();
+        String rawPeer = in.readUTF();
+        String peer = knownPeer(rawPeer);
+        if (peer == null) {
+            sendError(out, lock, "Unknown user.");
+            return;
+        }
+
         Path dir = userThreadDir(username, peer);
         Files.createDirectories(dir);
 
         List<Properties> messages = new ArrayList<>();
         try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir, "*.meta")) {
             for (Path p : ds) {
-                Properties pr = new Properties();
-                try (Reader r = Files.newBufferedReader(p)) {
-                    pr.load(r);
-                }
-                messages.add(pr);
+                messages.add(readMeta(p));
             }
         }
 
@@ -315,7 +391,7 @@ public class FileTransferServer {
 
         synchronized (lock) {
             out.writeUTF(Protocol.THREAD_MESSAGES);
-            out.writeUTF(peer);
+            out.writeUTF(rawPeer); // echo what the client asked for, so it can match its UI state
             out.writeInt(messages.size());
 
             for (Properties pr : messages) {
@@ -347,21 +423,18 @@ public class FileTransferServer {
         Path dir = userThreadDir(ownerUser, peerUser);
         Files.createDirectories(dir);
 
-        Path meta = dir.resolve(messageId + ".meta");
-        String content =
-                "messageId=" + messageId + "\n" +
-                        "messageType=TEXT\n" +
-                        "direction=" + direction + "\n" +
-                        "fromUser=" + fromUser + "\n" +
-                        "toUser=" + toUser + "\n" +
-                        "timestamp=" + timestamp + "\n" +
-                        "timestampMillis=" + timestampMillis + "\n" +
-                        "text=" + escape(text) + "\n";
-
-        Files.writeString(meta, content, StandardOpenOption.CREATE_NEW);
+        Properties p = new Properties();
+        p.setProperty("messageId", messageId);
+        p.setProperty("messageType", "TEXT");
+        p.setProperty("direction", direction);
+        p.setProperty("fromUser", fromUser);
+        p.setProperty("toUser", toUser);
+        p.setProperty("timestamp", timestamp);
+        p.setProperty("timestampMillis", Long.toString(timestampMillis));
+        p.setProperty("text", text);
+        writeMeta(SafeNames.resolveInside(dir, messageId + ".meta"), p);
     }
 
-    // Update existing writeThreadMeta(...) for FILE to include messageType
     private void writeThreadMeta(String ownerUser, String peerUser, String messageId,
                                  String direction, String fromUser, String toUser,
                                  String fileName, long fileSize,
@@ -371,53 +444,62 @@ public class FileTransferServer {
         Path dir = userThreadDir(ownerUser, peerUser);
         Files.createDirectories(dir);
 
-        Path meta = dir.resolve(messageId + ".meta");
-        String content =
-                "messageId=" + messageId + "\n" +
-                        "messageType=FILE\n" +
-                        "direction=" + direction + "\n" +
-                        "fromUser=" + fromUser + "\n" +
-                        "toUser=" + toUser + "\n" +
-                        "fileName=" + fileName + "\n" +
-                        "fileSize=" + fileSize + "\n" +
-                        "timestamp=" + timestamp + "\n" +
-                        "timestampMillis=" + timestampMillis + "\n" +
-                        "downloadable=" + downloadable + "\n";
-
-        Files.writeString(meta, content, StandardOpenOption.CREATE_NEW);
+        Properties p = new Properties();
+        p.setProperty("messageId", messageId);
+        p.setProperty("messageType", "FILE");
+        p.setProperty("direction", direction);
+        p.setProperty("fromUser", fromUser);
+        p.setProperty("toUser", toUser);
+        p.setProperty("fileName", fileName);
+        p.setProperty("fileSize", Long.toString(fileSize));
+        p.setProperty("timestamp", timestamp);
+        p.setProperty("timestampMillis", Long.toString(timestampMillis));
+        p.setProperty("downloadable", Boolean.toString(downloadable));
+        writeMeta(SafeNames.resolveInside(dir, messageId + ".meta"), p);
     }
 
-    private static String escape(String s) {
-        // Properties format: we keep it simple and avoid newlines breaking the file
-        return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r");
+    /** Properties.store escapes '=', ':', newlines etc., so values cannot inject extra keys. */
+    private static void writeMeta(Path file, Properties p) throws IOException {
+        try (Writer w = Files.newBufferedWriter(file, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW)) {
+            p.store(w, null);
+        }
     }
 
+    private static Properties readMeta(Path file) throws IOException {
+        Properties p = new Properties();
+        try (Reader r = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            p.load(r);
+        }
+        return p;
+    }
+
+    private Path userDir(String username) {
+        return SafeNames.resolveInside(usersDir, username);
+    }
 
     private Path userThreadDir(String username, String peer) {
-        return usersDir.resolve(username).resolve("threads").resolve(peer);
+        Path threads = userDir(username).resolve("threads");
+        return SafeNames.resolveInside(threads, peer);
     }
+
     private void handleListMyFiles(String username, DataOutputStream out, Object lock) throws Exception {
         Path inbox = userInboxDir(username);
         Files.createDirectories(inbox);
 
-        List<Path> metas = new ArrayList<>();
+        List<Properties> metas = new ArrayList<>();
         try (DirectoryStream<Path> ds = Files.newDirectoryStream(inbox, "*.meta")) {
-            for (Path p : ds) metas.add(p);
+            for (Path p : ds) metas.add(readMeta(p));
         }
 
         synchronized (lock) {
             out.writeUTF(Protocol.MY_FILES);
             out.writeInt(metas.size());
-            for (Path meta : metas) {
-                Properties pr = new Properties();
-                try (Reader r = Files.newBufferedReader(meta)) {
-                    pr.load(r);
-                }
-                out.writeUTF(pr.getProperty("fileId"));
-                out.writeUTF(pr.getProperty("fileName"));
-                out.writeLong(Long.parseLong(pr.getProperty("fileSize")));
-                out.writeUTF(pr.getProperty("fromUser"));
-                out.writeUTF(pr.getProperty("timestamp"));
+            for (Properties pr : metas) {
+                out.writeUTF(pr.getProperty("messageId", pr.getProperty("fileId", "")));
+                out.writeUTF(pr.getProperty("fileName", "file"));
+                out.writeLong(Long.parseLong(pr.getProperty("fileSize", "0")));
+                out.writeUTF(pr.getProperty("fromUser", ""));
+                out.writeUTF(pr.getProperty("timestamp", ""));
             }
             out.flush();
         }
@@ -425,23 +507,24 @@ public class FileTransferServer {
 
     private void handleDownload(String username, DataInputStream in, DataOutputStream out, Object lock) throws Exception {
         String fileId = in.readUTF();
+        if (!SafeNames.isValidMessageId(fileId)) {
+            sendError(out, lock, "Not found");
+            return;
+        }
 
         Path inbox = userInboxDir(username);
-        Path meta = inbox.resolve(fileId + ".meta");
-        Path bin = inbox.resolve(fileId + ".bin");
+        Path meta = SafeNames.resolveInside(inbox, fileId + ".meta");
+        Path bin = SafeNames.resolveInside(inbox, fileId + ".bin");
 
         if (!Files.exists(meta) || !Files.exists(bin)) {
             sendError(out, lock, "Not found");
             return;
         }
 
-        Properties pr = new Properties();
-        try (Reader r = Files.newBufferedReader(meta)) {
-            pr.load(r);
-        }
+        Properties pr = readMeta(meta);
 
-        String fileName = pr.getProperty("fileName");
-        long fileSize = Long.parseLong(pr.getProperty("fileSize"));
+        String fileName = SafeNames.sanitizeFileName(pr.getProperty("fileName"));
+        long fileSize = Files.size(bin); // trust the actual file, not the metadata
 
         synchronized (lock) {
             out.writeUTF(Protocol.FILE);
@@ -452,10 +535,21 @@ public class FileTransferServer {
 
         try (InputStream fileIn = Files.newInputStream(bin)) {
             byte[] buffer = new byte[Limits.BUFFER_SIZE];
-            int read;
-            while ((read = fileIn.read(buffer)) != -1) {
+            long left = fileSize;
+            while (left > 0) {
+                int read = fileIn.read(buffer, 0, (int) Math.min(buffer.length, left));
+                if (read == -1) break;
                 out.write(buffer, 0, read);
+                left -= read;
             }
+            out.flush();
+        }
+    }
+
+    private void authFailed(DataOutputStream out, Object lock, String reason) throws IOException {
+        synchronized (lock) {
+            out.writeUTF(Protocol.AUTH_FAILED);
+            out.writeUTF(reason);
             out.flush();
         }
     }
@@ -469,6 +563,6 @@ public class FileTransferServer {
     }
 
     private Path userInboxDir(String username) {
-        return usersDir.resolve(username).resolve("inbox");
+        return userDir(username).resolve("inbox");
     }
 }

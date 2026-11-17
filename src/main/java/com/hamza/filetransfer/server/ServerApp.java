@@ -62,9 +62,18 @@ public class ServerApp extends Application {
         stage.setScene(scene);
         stage.show();
 
+        AccountStore accounts;
+        try {
+            accounts = new AccountStore(Path.of("server-storage", "accounts.properties"));
+        } catch (Exception e) {
+            info.setText("Failed to load accounts: " + e.getMessage());
+            return;
+        }
+
         FileTransferServer server = new FileTransferServer(
                 5000,
                 Path.of("server-storage", "users"),
+                accounts,
                 session -> Platform.runLater(() -> sessions.add(session))
         );
         server.startAsync();

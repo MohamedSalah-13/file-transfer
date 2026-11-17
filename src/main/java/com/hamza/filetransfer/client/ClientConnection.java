@@ -2,14 +2,18 @@ package com.hamza.filetransfer.client;
 
 import com.hamza.filetransfer.shared.Limits;
 import com.hamza.filetransfer.shared.Protocol;
+import com.hamza.filetransfer.shared.SafeNames;
 import javafx.application.Platform;
 
 import java.io.*;
 import java.net.Socket;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -18,7 +22,8 @@ public class ClientConnection implements Closeable {
 
     private final String host;
     private final int port;
-    private final String username;
+    private final String username;   // canonical name returned by the server
+    private final String sessionToken; // authorizes extra TRANSFER sockets
 
     private final Socket socket;
     private final DataInputStream in;
@@ -45,35 +50,44 @@ public class ClientConnection implements Closeable {
     private Consumer<IncomingTextEvent> onIncomingText = evt -> {
     };
 
-    public ClientConnection(String host, int port, String username) throws Exception {
+    /**
+     * Opens the CONTROL connection and logs in. A new username is registered with this password
+     * on first login; afterwards the same password is required.
+     */
+    public ClientConnection(String host, int port, String username, char[] password) throws Exception {
         this.host = host;
         this.port = port;
-        this.username = username;
 
         this.socket = new Socket(host, port);
-        this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
-        this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+        try {
+            this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+            this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
 
-        // HELLO
-        synchronized (writeLock) {
-            out.writeUTF(Protocol.HELLO);
-            out.writeUTF(username);
-            out.flush();
-        }
+            // HELLO <username> <password>
+            synchronized (writeLock) {
+                out.writeUTF(Protocol.HELLO);
+                out.writeUTF(username);
+                out.writeUTF(new String(password));
+                out.flush();
+            }
 
-        String resp = in.readUTF();
-        if (Protocol.HELLO_TAKEN.equals(resp)) {
-            throw new IllegalStateException("Username already online.");
-        }
-        if (!Protocol.HELLO_OK.equals(resp)) {
-            throw new IllegalStateException("Unexpected HELLO response: " + resp);
-        }
-
-        // NEW: declare this socket as CONTROL channel
-        synchronized (writeLock) {
-            out.writeUTF(Protocol.MODE);
-            out.writeUTF(Protocol.MODE_CONTROL);
-            out.flush();
+            String resp = in.readUTF();
+            if (Protocol.HELLO_TAKEN.equals(resp)) {
+                throw new IllegalStateException("Username already online.");
+            }
+            if (Protocol.AUTH_FAILED.equals(resp) || Protocol.ERROR.equals(resp)) {
+                throw new IllegalStateException(in.readUTF());
+            }
+            if (!Protocol.HELLO_OK.equals(resp)) {
+                throw new IllegalStateException("Unexpected HELLO response: " + resp);
+            }
+            this.username = in.readUTF();
+            this.sessionToken = in.readUTF();
+        } catch (Exception e) {
+            socket.close();
+            throw e;
+        } finally {
+            Arrays.fill(password, '\0');
         }
 
         Thread listener = new Thread(this::listenLoop, "client-control-listener");
@@ -270,18 +284,18 @@ public class ClientConnection implements Closeable {
                  DataInputStream din = new DataInputStream(new BufferedInputStream(s.getInputStream()));
                  DataOutputStream dout = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()))) {
 
-                dout.writeUTF(Protocol.HELLO);
+                dout.writeUTF(Protocol.HELLO_TRANSFER);
                 dout.writeUTF(username);
+                dout.writeUTF(sessionToken);
                 dout.flush();
 
                 String helloResp = din.readUTF();
+                if (Protocol.AUTH_FAILED.equals(helloResp)) {
+                    throw new IOException(din.readUTF());
+                }
                 if (!Protocol.HELLO_OK.equals(helloResp)) {
                     throw new IOException("Download channel HELLO failed: " + helloResp);
                 }
-
-                dout.writeUTF(Protocol.MODE);
-                dout.writeUTF(Protocol.MODE_TRANSFER);
-                dout.flush();
 
                 dout.writeUTF(Protocol.DOWNLOAD);
                 dout.writeUTF(fileId);
@@ -296,19 +310,30 @@ public class ClientConnection implements Closeable {
                     throw new IOException("Unexpected response: " + type);
                 }
 
-                String fileName = din.readUTF();
+                // Never trust the name sent by the server/sender: it could contain "..\\" or an absolute path.
+                String fileName = SafeNames.sanitizeFileName(din.readUTF());
                 long fileSize = din.readLong();
+                if (fileSize < 0 || fileSize > Limits.MAX_FILE_BYTES) {
+                    throw new IOException("Invalid file size: " + fileSize);
+                }
 
-                Path finalTarget = Files.isDirectory(targetDirOrFile)
-                        ? targetDirOrFile.resolve(fileName)
-                        : targetDirOrFile;
+                Path finalTarget;
+                OpenOption[] openOptions;
+                if (Files.isDirectory(targetDirOrFile)) {
+                    // Saving into a folder: stay inside it and never overwrite an existing file.
+                    finalTarget = uniqueTarget(targetDirOrFile, fileName);
+                    openOptions = new OpenOption[]{StandardOpenOption.CREATE_NEW};
+                } else {
+                    // The user explicitly picked this exact file.
+                    finalTarget = targetDirOrFile;
+                    openOptions = new OpenOption[]{StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING};
+                }
 
                 Files.createDirectories(finalTarget.getParent());
 
                 Platform.runLater(() -> onStatus.accept("DOWNLOADING"));
 
-                try (OutputStream fileOut = Files.newOutputStream(finalTarget,
-                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                try (OutputStream fileOut = Files.newOutputStream(finalTarget, openOptions)) {
 
                     byte[] buffer = new byte[Limits.BUFFER_SIZE];
                     long received = 0;
@@ -338,6 +363,24 @@ public class ClientConnection implements Closeable {
 
         t.setDaemon(true);
         t.start();
+    }
+
+    /** "name.ext", then "name (1).ext", "name (2).ext"... inside {@code dir}. */
+    private static Path uniqueTarget(Path dir, String fileName) throws IOException {
+        int dot = fileName.lastIndexOf('.');
+        String base = dot > 0 ? fileName.substring(0, dot) : fileName;
+        String ext = dot > 0 ? fileName.substring(dot) : "";
+
+        for (int i = 0; i < 1000; i++) {
+            String candidate = i == 0 ? fileName : base + " (" + i + ")" + ext;
+            Path p = SafeNames.resolveInside(dir, candidate);
+            if (!Files.exists(p, LinkOption.NOFOLLOW_LINKS)) return p;
+        }
+        throw new IOException("Too many files named " + fileName);
+    }
+
+    public String getUsername() {
+        return username;
     }
 
     @Override
