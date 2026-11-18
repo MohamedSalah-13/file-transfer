@@ -1,5 +1,7 @@
 package com.hamza.filetransfer.client;
 
+import com.hamza.updater.AppUpdater;
+import com.hamza.updater.fx.UpdatePrompt;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.beans.InvalidationListener;
@@ -67,6 +69,7 @@ public class ClientApp extends Application {
     private ClientConnection conn;
     private final BooleanProperty connected = new SimpleBooleanProperty(false); // drives Connect/Disconnect
     private SettingsWindow settings;
+    private UpdatePrompt updates;
     private KnownServers knownServers; // servers whose TLS certificate this user trusted
     private String activePeer;
     private ListView<ChatMessage> chatListRef;
@@ -155,6 +158,13 @@ public class ClientApp extends Application {
                 .orElse(ThemeManager.getThemes().getFirst());
         I18n.setLanguage(look.language());
         ThemeManager.applyTheme(startTheme);
+        // A newer release is announced in this window; closing for the installer goes the way closing the
+        // window does, so the panel layout is saved and stop() removes the tray icon.
+        AppUpdater updater = Updates.updater();
+        updates = UpdatePrompt.create(updater, stage).language(look.language()).onExit(() -> {
+            stage.hide();
+            Platform.exit();
+        }).start();
 
         LastLogin last = LastLogin.load(LastLogin.defaultLocation());
         TextField tfHost = new TextField(last.host());
@@ -182,6 +192,7 @@ public class ClientApp extends Application {
         langPicker.setOnAction(e -> {
             String selected = langPicker.getValue();
             I18n.setLanguage(selected.equals("العربية") ? "ar" : "en");
+            updates.language(selected.equals("العربية") ? "ar" : "en");
             applyOrientation(stage.getScene().getRoot());
             settings.applyOrientation();
             if (chatListRef != null) chatListRef.refresh(); // bubbles read translations when rendered
@@ -227,6 +238,19 @@ public class ClientApp extends Application {
         notifyEnabled.bind(cbNotify.selectedProperty());
         cbNotify.selectedProperty().addListener((obs, was, on) -> rememberNotify(on));
         appearanceForm.addRow(2, label("notifications"), cbNotify);
+        Button btnCheckUpdates = Icons.on(new Button(), Feather.DOWNLOAD_CLOUD);
+        btnCheckUpdates.textProperty().bind(I18n.bind("check_updates"));
+        btnCheckUpdates.setOnAction(e -> updates.checkNow());
+        Label lblVersion = updater.currentVersion()
+                .map(version -> {
+                    Label l = new Label();
+                    l.textProperty().bind(I18n.bind("updates_version", version.toString()));
+                    return l;
+                })
+                .orElseGet(() -> label("updates_dev"));
+        HBox updatesRow = new HBox(10, btnCheckUpdates, lblVersion);
+        updatesRow.setAlignment(Pos.CENTER_LEFT);
+        appearanceForm.addRow(3, label("updates"), updatesRow);
 
         // ===== Top bar: status, connect/disconnect, panel toggles, settings =====
         lblStatus.getStyleClass().add("connection-status");
@@ -1225,6 +1249,7 @@ public class ClientApp extends Application {
 
     @Override
     public void stop() {
+        if (updates != null) updates.stop();
         if (notifier != null) notifier.close(); // removes the tray icon, so the JVM can exit
     }
 

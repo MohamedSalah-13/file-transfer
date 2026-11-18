@@ -3,7 +3,9 @@ package com.hamza.filetransfer.server;
 import com.hamza.filetransfer.client.Appearance;
 import com.hamza.filetransfer.client.I18n;
 import com.hamza.filetransfer.client.ThemeManager;
+import com.hamza.filetransfer.client.Updates;
 import com.hamza.filetransfer.shared.Discovery;
+import com.hamza.updater.fx.UpdatePrompt;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
@@ -130,8 +132,12 @@ public class ServerApp extends Application {
         applyOrientation(root);
 
         // Handlers are set after the start values are selected, so selecting them saves nothing.
+        // The person who runs the server is told of a new release too: clients that update ahead of the
+        // server cannot connect when the release changes the protocol.
+        UpdatePrompt updates = UpdatePrompt.create(Updates.updater(), stage).language(look.language()).start();
         langPicker.setOnAction(e -> {
             I18n.setLanguage(ARABIC.equals(langPicker.getValue()) ? "ar" : "en");
+            updates.language(ARABIC.equals(langPicker.getValue()) ? "ar" : "en");
             applyOrientation(root);
             rememberAppearance(langPicker, themePicker);
         });
