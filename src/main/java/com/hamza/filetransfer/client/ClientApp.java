@@ -69,6 +69,15 @@ public class ClientApp extends Application {
     private ListView<UserItem> usersViewRef;
     private Path lastAttachFolder; // the file dialog opens where the last attachment came from
     final ObservableList<Path> attachments = FXCollections.observableArrayList(); // picked with "Attach Files"; tests fill it directly
+    private Path lastDownloadFolder; // the folder dialog opens where the last download went
+    private LocalFiles localFiles;   // where chat files are on this computer (downloaded or sent)
+    /** Opening and showing files; tests replace them so nothing really opens. */
+    FileAction openFile = FileLauncher::open;
+    FileAction showInFolder = FileLauncher::showInFolder;
+
+    interface FileAction {
+        void run(Path file) throws Exception;
+    }
     private Stage mainStage;
 
     /** Shows a desktop notification; {@link DesktopNotifier} in the app, a recorder in tests. */
@@ -104,6 +113,7 @@ public class ClientApp extends Application {
     @Override
     public void start(Stage stage) throws Exception {
         knownServers = new KnownServers(KnownServers.defaultLocation());
+        localFiles = new LocalFiles(LocalFiles.defaultLocation());
         mainStage = stage;
         if (windowInFront == null) windowInFront = stage::isFocused;
         notifyEnabled.set(NotifySetting.load(NotifySetting.defaultLocation()).enabled());
@@ -552,8 +562,9 @@ public class ClientApp extends Application {
         Thread t = new Thread(() -> {
             try {
                 // Server errors (e.g. unknown recipient, file too large) fail this row only.
-                c.sendFile(peer, file, row::setProgress, row.handle());
+                String messageId = c.sendFile(peer, file, row::setProgress, row.handle());
                 Platform.runLater(() -> {
+                    localFiles.remember(messageId, file); // the sender can open their original too
                     row.setStatus("DONE");
                     refreshThreadIfActive(peer);
                 });
@@ -632,9 +643,79 @@ public class ClientApp extends Application {
 
         DirectoryChooser dc = new DirectoryChooser();
         dc.setTitle(I18n.get("choose_download_folder"));
+        if (lastDownloadFolder != null && Files.isDirectory(lastDownloadFolder)) dc.setInitialDirectory(lastDownloadFolder.toFile());
         var dir = dc.showDialog(stage);
         if (dir == null) return;
+        lastDownloadFolder = dir.toPath();
+        downloadInto(dir.toPath(), messageId, displayName);
+    }
 
+    /**
+     * Opens a chat file with its usual program. A received file that can run programs (an .exe, a
+     * script...) asks first, with Cancel as the default: it came from someone else.
+     */
+    private void openChatFile(ChatMessage m) {
+        Path file = stillThere(m);
+        if (file == null) return;
+        if (!m.outgoingProperty().get() && FileLauncher.canRunPrograms(file.getFileName().toString())
+                && !confirmOpenRunnable(file.getFileName().toString(), m.fromUserProperty().get())) {
+            return;
+        }
+        runFileAction(openFile, file);
+    }
+
+    private void showChatFile(ChatMessage m) {
+        Path file = stillThere(m);
+        if (file != null) runFileAction(showInFolder, file);
+    }
+
+    /** The message's file, or null (and its buttons go back to Download) if it was moved or deleted. */
+    private Path stillThere(ChatMessage m) {
+        Path file = m.localPathProperty().get();
+        if (file != null && Files.isRegularFile(file)) return file;
+        m.localPathProperty().set(null);
+        if (chatListRef != null) chatListRef.refresh();
+        return null;
+    }
+
+    /** Opening can block for a moment (Explorer, a big program): never on the FX thread. */
+    private void runFileAction(FileAction action, Path file) {
+        Thread t = new Thread(() -> {
+            try {
+                action.run(file);
+            } catch (Exception e) {
+                String why = e.getMessage() == null ? e.toString() : e.getMessage();
+                Platform.runLater(() -> {
+                    Alert alert = new Alert(Alert.AlertType.ERROR, I18n.get("open_failed", file.getFileName().toString(), why), ButtonType.OK);
+                    alert.setTitle(I18n.get("app_title"));
+                    alert.setHeaderText(null);
+                    showLocalized(mainStage, alert);
+                });
+            }
+        }, "open-file");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private boolean confirmOpenRunnable(String fileName, String sender) {
+        ButtonType openAnyway = new ButtonType(I18n.get("open_anyway"), ButtonBar.ButtonData.OTHER);
+        ButtonType cancel = new ButtonType(I18n.get("cancel"), ButtonBar.ButtonData.CANCEL_CLOSE);
+        Label explain = new Label(I18n.get("open_risky_content", sender));
+        explain.setWrapText(true);
+        Alert alert = new Alert(Alert.AlertType.WARNING, "", openAnyway, cancel);
+        alert.setTitle(I18n.get("open_risky_title"));
+        alert.setHeaderText(I18n.get("open_risky_header", fileName));
+        alert.getDialogPane().setContent(explain);
+        alert.getDialogPane().setPrefWidth(520);
+        Button anyway = Icons.on((Button) alert.getDialogPane().lookupButton(openAnyway), Feather.ALERT_TRIANGLE);
+        anyway.setDefaultButton(false);
+        ((Button) alert.getDialogPane().lookupButton(cancel)).setDefaultButton(true); // Enter must not run it
+        return showLocalized(mainStage, alert).orElse(cancel) == openAnyway;
+    }
+
+    /** Downloads a chat file into {@code dir} (the folder dialog is only in front of this; tests call it directly). */
+    void downloadInto(Path dir, String messageId, String displayName) {
+        if (conn == null) return;
         SimpleTransferRow row = new SimpleTransferRow("");
         row.nameProperty().bind(I18n.bind("transfer_download", displayName));
         row.setStatus("QUEUED");
@@ -642,12 +723,13 @@ public class ClientApp extends Application {
 
         conn.startParallelDownload(
                 messageId,
-                dir.toPath(),
+                dir,
                 row::setProgress,
                 row::setStatus,
                 row::setFailed,
                 savedPath -> {
-                    // attach local path to the message (enables thumbnail)
+                    localFiles.remember(messageId, savedPath); // Open / Show in folder, also after a restart
+                    // attach local path to the message (enables thumbnail and the buttons)
                     ChatMessage msg = findMessageById(messageId);
                     if (msg != null) {
                         msg.localPathProperty().set(savedPath);
@@ -914,6 +996,11 @@ public class ClientApp extends Application {
             if (conn != c) return;
             // A reply can arrive after the user switched to another chat: only show it if it is
             // still the open one, but its last message is still the right preview for `peer`.
+            for (ChatMessage m : msgs) { // files already on this computer: buttons and previews
+                if (m.typeProperty().get() == ChatMessage.Type.FILE && m.localPathProperty().get() == null) {
+                    m.localPathProperty().set(localFiles.find(m.messageIdProperty().get()));
+                }
+            }
             if (peer.equals(activePeer)) chatMessages.setAll(msgs);
             updateLastPreviewFromThread(peer, msgs);
             resortUsers();
@@ -1146,7 +1233,7 @@ public class ClientApp extends Application {
         }
     }
 
-    private static final class ChatBubbleCell extends ListCell<ChatMessage> {
+    private final class ChatBubbleCell extends ListCell<ChatMessage> {
         private static Node fileBadgeFor(String fileName) {
             Label b = new Label(switch (FileTypeUtil.kindOf(fileName)) {
                 case IMAGE -> "IMG";
@@ -1176,6 +1263,38 @@ public class ClientApp extends Application {
                 line.getChildren().add(part);
             }
             return line;
+        }
+
+        /**
+         * Open and Show in folder for a file that is on this computer (downloaded, or sent from
+         * here); Download for one that can be downloaded; nothing otherwise.
+         */
+        private Node fileActions(ChatMessage item) {
+            if (item.typeProperty().get() != ChatMessage.Type.FILE) return null;
+            Path local = item.localPathProperty().get();
+            HBox row = new HBox(6);
+            row.getStyleClass().add("bubble-actions");
+            if (local != null && Files.isRegularFile(local)) {
+                Button open = bubbleButton("file_open", Feather.EXTERNAL_LINK);
+                open.setOnAction(e -> openChatFile(item));
+                Button show = bubbleButton("file_show_in_folder", Feather.FOLDER);
+                show.setOnAction(e -> showChatFile(item));
+                row.getChildren().addAll(open, show);
+            } else if (item.downloadableProperty().get()) {
+                Button download = bubbleButton("file_download", Feather.DOWNLOAD);
+                download.setOnAction(e -> chooseAndDownload(mainStage, item.messageIdProperty().get(), item.fileNameProperty().get()));
+                row.getChildren().add(download); // double-clicking the bubble still works too
+            } else {
+                return null;
+            }
+            return row;
+        }
+
+        private static Button bubbleButton(String key, Feather icon) {
+            Button b = Icons.on(new Button(I18n.get(key)), icon); // cells re-render on a language switch
+            b.getStyleClass().add(Styles.SMALL);
+            b.setFocusTraversable(false);
+            return b;
         }
 
         private static String humanSize(long bytes) {
@@ -1243,12 +1362,11 @@ public class ClientApp extends Application {
                     bodyNode = fileLine;
                 }
 
-                meta = item.downloadableProperty().get()
-                        ? metaLine(humanSize(item.fileSizeProperty().get()), I18n.messageTime(item.timestampProperty().get()), I18n.get("bubble_double_click"))
-                        : metaLine(humanSize(item.fileSizeProperty().get()), I18n.messageTime(item.timestampProperty().get()));
+                meta = metaLine(humanSize(item.fileSizeProperty().get()), I18n.messageTime(item.timestampProperty().get()));
             }
 
-            VBox box = new VBox(4, title, bodyNode, meta);
+            Node actions = fileActions(item);
+            VBox box = actions == null ? new VBox(4, title, bodyNode, meta) : new VBox(4, title, bodyNode, meta, actions);
 
             StackPane bubble = new StackPane(box);
             bubble.getStyleClass().add("bubble");

@@ -334,24 +334,25 @@ public class ClientConnection implements Closeable {
         sendRequest(o -> o.writeUTF(Protocol.LIST_MY_FILES));
     }
 
-    public void sendFile(String toUser, Path file, BiConsumer<Long, Long> onProgress) throws Exception {
-        sendFile(toUser, file, onProgress, new TransferHandle());
+    /** Uploads {@code file} and returns the new message's id. */
+    public String sendFile(String toUser, Path file, BiConsumer<Long, Long> onProgress) throws Exception {
+        return sendFile(toUser, file, onProgress, new TransferHandle());
     }
 
     /**
-     * Uploads {@code file}; {@code handle.cancel()} stops it and makes this throw
-     * {@link TransferHandle.TransferCancelledException}.
+     * Uploads {@code file} and returns the new message's id; {@code handle.cancel()} stops it and
+     * makes this throw {@link TransferHandle.TransferCancelledException}.
      */
-    public void sendFile(String toUser, Path file, BiConsumer<Long, Long> onProgress, TransferHandle handle) throws Exception {
+    public String sendFile(String toUser, Path file, BiConsumer<Long, Long> onProgress, TransferHandle handle) throws Exception {
         try {
-            upload(toUser, file, onProgress, handle);
+            return upload(toUser, file, onProgress, handle);
         } catch (Exception e) {
             handle.throwIfCancelled(); // the socket closed under us because the user cancelled
             throw e;
         }
     }
 
-    private void upload(String toUser, Path file, BiConsumer<Long, Long> onProgress, TransferHandle handle) throws Exception {
+    private String upload(String toUser, Path file, BiConsumer<Long, Long> onProgress, TransferHandle handle) throws Exception {
         handle.throwIfCancelled();
         long size = Files.size(file);
         if (size > Limits.MAX_FILE_BYTES) {
@@ -391,7 +392,7 @@ public class ClientConnection implements Closeable {
             String reply = t.in.readUTF();
             if (Protocol.ERROR.equals(reply)) throw new AppException(AppError.read(t.in));
             if (!Protocol.SEND_OK.equals(reply)) throw new AppException(AppError.PROTOCOL_ERROR, reply);
-            t.in.readUTF(); // message id
+            return t.in.readUTF(); // message id
         }
     }
 

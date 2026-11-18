@@ -83,6 +83,11 @@
     -fx-text-fill: white;
 }
 
+/* The file badge keeps its light pill in your own (blue) bubbles, so its text must stay dark */
+.bubble-out .file-badge {
+    -fx-text-fill: -color-accent-emphasis;
+}
+
 .bubble-title {
     -fx-font-weight: 700;
 }
