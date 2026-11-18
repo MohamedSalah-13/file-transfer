@@ -117,6 +117,11 @@ public record ServerConfig(int port, Path storageDir) {
         return storageDir.resolve("tls");
     }
 
+    /** Holds {@code storage.key}, the key that encrypts everything under {@link #usersDir()}. */
+    public Path keysDir() {
+        return storageDir.resolve("keys");
+    }
+
     public Path usersDir() {
         return storageDir.resolve("users");
     }

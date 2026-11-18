@@ -154,6 +154,7 @@ server-storage/
 - 5 wrong logins in a row lock the account for 30 seconds.
 - **All connections use TLS 1.3.** The server creates its own certificate on first start and shows its fingerprint in its window.
 - **Trust on first use (TOFU):** the first time a client connects to a server, it shows the server's fingerprint and asks you; compare it with the server window before you accept. After that the client remembers it, and if the certificate ever changes it blocks the connection and warns you (someone may be impersonating the server). The password is only sent after the server is verified.
+- **Files and messages are encrypted on the server** (AES-256-GCM): file contents and message details (text and file names) in `server-storage/users` are encrypted with a key in `server-storage/keys/storage.key`, which the server creates on first start. Files from an older version are encrypted on their own at the first start. **Back up the key**: without it, every stored file and message is lost. The encryption protects copies of the `users` folder (such as backups), not someone who can read the whole `server-storage` folder, since the key is in it.
 
 ## Known limitations
 

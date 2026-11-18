@@ -60,6 +60,7 @@ public class FileTransferServer {
     private final Path usersDir;
     private final AccountStore accounts;
     private final SSLContext tls;
+    private final StorageCrypto crypto;
     private final SecureRandom random = new SecureRandom();
 
     // CONTROL connections only
@@ -67,22 +68,28 @@ public class FileTransferServer {
 
     private final Consumer<TransferSession> onNewSession;
 
-    /** Every connection is TLS 1.3 with the server certificate in {@code tls} (see {@link ServerTls}). */
+    /**
+     * Every connection is TLS 1.3 with the server certificate in {@code tls} (see {@link ServerTls}).
+     * Everything stored under {@code usersDir} is encrypted with {@code crypto} (see {@link StorageCrypto}).
+     */
     public FileTransferServer(int port, Path usersDir, AccountStore accounts, SSLContext tls,
-                              Consumer<TransferSession> onNewSession) {
+                              StorageCrypto crypto, Consumer<TransferSession> onNewSession) {
         this.port = port;
         this.usersDir = usersDir.toAbsolutePath().normalize();
         this.accounts = accounts;
         this.tls = tls;
+        this.crypto = crypto;
         this.onNewSession = onNewSession;
     }
 
     /**
-     * Opens the port right away, so a problem such as a port already in use is thrown here
-     * (a {@link java.net.BindException}), then accepts clients on a background thread.
+     * Encrypts any plain files left from before storage encryption, then opens the port right away,
+     * so a problem such as a port already in use is thrown here (a {@link java.net.BindException}),
+     * then accepts clients on a background thread.
      */
     public void startAsync() throws IOException {
         Files.createDirectories(usersDir);
+        encryptPlainFiles();
         SSLServerSocket serverSocket = (SSLServerSocket) tls.getServerSocketFactory().createServerSocket(port);
         serverSocket.setEnabledProtocols(new String[]{Tls.PROTOCOL});
         Thread t = new Thread(() -> acceptLoop(serverSocket), "server-acceptor");
@@ -349,7 +356,7 @@ public class FileTransferServer {
         Path bin = SafeNames.resolveInside(inbox, messageId + ".bin");
         Path metaInbox = SafeNames.resolveInside(inbox, messageId + ".meta");
 
-        try (OutputStream fileOut = Files.newOutputStream(bin, StandardOpenOption.CREATE_NEW)) {
+        try (OutputStream fileOut = crypto.encrypt(Files.newOutputStream(bin, StandardOpenOption.CREATE_NEW), context(bin))) {
             byte[] buffer = new byte[Limits.BUFFER_SIZE];
             long received = 0;
 
@@ -555,20 +562,60 @@ public class FileTransferServer {
         writeMeta(SafeNames.resolveInside(dir, messageId + ".meta"), p);
     }
 
-    /** Properties.store escapes '=', ':', newlines etc., so values cannot inject extra keys. */
-    private static void writeMeta(Path file, Properties p) throws IOException {
-        try (Writer w = Files.newBufferedWriter(file, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW)) {
-            p.store(w, null);
+    /**
+     * Properties.store escapes '=', ':', newlines etc., so values cannot inject extra keys.
+     * The result is encrypted before it touches the disk.
+     */
+    private void writeMeta(Path file, Properties p) throws IOException {
+        StringWriter text = new StringWriter();
+        p.store(text, null);
+        byte[] sealed = crypto.encrypt(text.toString().getBytes(StandardCharsets.UTF_8), context(file));
+        Files.write(file, sealed, StandardOpenOption.CREATE_NEW);
+    }
+
+    private Properties readMeta(Path file) throws IOException {
+        byte[] plain = crypto.decrypt(Files.readAllBytes(file), context(file));
+        Properties p = new Properties();
+        p.load(new StringReader(new String(plain, StandardCharsets.UTF_8)));
+        return p;
+    }
+
+    /**
+     * What an encrypted file is bound to: its path under {@code users/}, lower-cased (account names are
+     * case-insensitive and Windows folder names may differ in case). A file moved elsewhere won't decrypt.
+     */
+    private String context(Path file) {
+        Path rel = usersDir.relativize(file.toAbsolutePath().normalize());
+        return rel.toString().replace('\\', '/').toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Encrypts, in place, the .bin and .meta files written before storage encryption (2.6.0 and older).
+     * Each file is encrypted into a temp file next to it and then moved over it, so a crash leaves
+     * either the plain or the encrypted file; leftover temp files are deleted. Files that already
+     * start like an encrypted file are skipped, so this is cheap on later starts.
+     */
+    private void encryptPlainFiles() throws IOException {
+        List<Path> files;
+        try (var walk = Files.walk(usersDir)) {
+            files = walk.filter(Files::isRegularFile).toList();
+        }
+        for (Path file : files) {
+            String name = file.getFileName().toString();
+            if (name.endsWith(MIGRATION_SUFFIX)) {
+                Files.deleteIfExists(file);
+            } else if ((name.endsWith(".bin") || name.endsWith(".meta")) && !StorageCrypto.looksEncrypted(file)) {
+                Path tmp = file.resolveSibling(name + MIGRATION_SUFFIX);
+                try (InputStream in = Files.newInputStream(file);
+                     OutputStream out = crypto.encrypt(Files.newOutputStream(tmp), context(file))) {
+                    in.transferTo(out);
+                }
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            }
         }
     }
 
-    private static Properties readMeta(Path file) throws IOException {
-        Properties p = new Properties();
-        try (Reader r = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
-            p.load(r);
-        }
-        return p;
-    }
+    private static final String MIGRATION_SUFFIX = ".encrypting.tmp";
 
     private Path userDir(String username) {
         return SafeNames.resolveInside(usersDir, username);
@@ -621,7 +668,9 @@ public class FileTransferServer {
         Properties pr = readMeta(meta);
 
         String fileName = SafeNames.sanitizeFileName(pr.getProperty("fileName"));
-        long fileSize = Files.size(bin); // trust the actual file, not the metadata
+        // Trust the actual file, not the metadata: its size follows from the encrypted size.
+        long fileSize = StorageCrypto.plainSize(Files.size(bin));
+        if (fileSize < 0) throw new IOException("Damaged stored file " + bin);
 
         synchronized (lock) {
             out.writeUTF(Protocol.FILE);
@@ -630,7 +679,9 @@ public class FileTransferServer {
             out.flush();
         }
 
-        try (InputStream fileIn = Files.newInputStream(bin)) {
+        // Each segment is checked before it is sent; a damaged file stops the download (the
+        // connection closes and the client deletes the partial file).
+        try (InputStream fileIn = crypto.decrypt(Files.newInputStream(bin), context(bin))) {
             byte[] buffer = new byte[Limits.BUFFER_SIZE];
             long left = fileSize;
             while (left > 0) {

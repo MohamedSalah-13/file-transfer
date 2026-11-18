@@ -58,11 +58,14 @@ Packages under `src/main/java/com/hamza/filetransfer/`:
 ### Server storage layout (`server-storage/`)
 ```
 accounts.properties                         # key = lowercase username; value = iterations:salt:hash:displayName (PBKDF2)
+keys/storage.key                            # AES-256 master key for everything under users/ (losing it loses all stored data)
 users/<user>/inbox/<messageId>.bin|.meta    # received file bytes + metadata (download source)
 users/<user>/threads/<peer>/<messageId>.meta  # chat history, one Properties file per message
 ```
+- **Encrypted at rest (`StorageCrypto`, since 2.7.0):** every `.bin` and `.meta` under `users/` is in the "FTE1" format: `"FTE1" | 16-byte salt | segments`. Per-file key = HMAC-SHA256(master, label || salt); the plaintext is cut into 64 KiB segments, each AES-256-GCM with nonce = segment number and AAD = header || context || segment number || last flag. So downloads stream (no whole-file buffering), each segment is verified before it is sent, truncation/reordering fails, and the context — the file's path under `users/`, lower-cased (`FileTransferServer.context`) — makes a file copied into another place fail to decrypt. The download size is `StorageCrypto.plainSize(Files.size(bin))`. Always read and write stored files through `crypto`; never `Files.newInputStream` on a `.bin` or `Properties.load` on a raw `.meta`. Folder names, message ids and file sizes (roughly) stay visible.
+- **Migration:** `FileTransferServer.startAsync` encrypts any plain `.bin`/`.meta` left from 2.6.0 and older (temp file + atomic move; files that already start with `FTE1` are skipped, leftover `*.encrypting.tmp` deleted), so it is cheap on later starts. The key protects copies/backups of `users/`, not someone who can read all of `server-storage/`.
 - Each message is written twice: once IN for the recipient and once OUT for the sender. Only the IN copy is `downloadable=true`.
-- `.meta` files are `java.util.Properties`, always written with `Properties.store` (never string concatenation) so values can't inject keys.
+- `.meta` files are `java.util.Properties`, always written with `Properties.store` (never string concatenation) so values can't inject keys, then encrypted.
 - There is no database; listing a thread reads every `.meta` file in the folder and sorts by `timestampMillis`.
 
 ### Security invariants (keep these when changing code)
@@ -71,6 +74,7 @@ users/<user>/threads/<peer>/<messageId>.meta  # chat history, one Properties fil
 - Usernames are NFC-normalized and case-insensitive. After login, always use the canonical name returned by `AccountStore.authenticate`.
 - The client sanitizes received file names and never overwrites an existing file when saving into a folder (`ClientConnection.uniqueTarget`).
 - All traffic is TLS 1.3. Clients pin the server certificate by fingerprint (trust on first use), so the first connection is only safe if the user compares the fingerprint with the server window. Never add a trust-all fallback.
+- Nothing under `users/` is written or read in plain text: use `StorageCrypto` with the file's `context`. Never overwrite or regenerate an existing `keys/storage.key`.
 
 ### Known issues
 - `messages*.properties` must stay UTF-8: Java 9+ reads resource bundles as UTF-8. The Arabic file was once saved with a non-UTF-8 encoding, which turned every character into `?`. Client UI text goes through `client.I18n` (`I18n.bind(key)` for live bindings that follow language switches); add new strings to all three `messages*.properties` files.
