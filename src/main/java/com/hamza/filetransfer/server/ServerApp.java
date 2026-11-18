@@ -1,10 +1,16 @@
 package com.hamza.filetransfer.server;
 
-import atlantafx.base.theme.PrimerLight;
+import com.hamza.filetransfer.client.Appearance;
+import com.hamza.filetransfer.client.I18n;
+import com.hamza.filetransfer.client.ThemeManager;
+import com.hamza.filetransfer.shared.Discovery;
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.beans.binding.Bindings;
+import javafx.beans.binding.StringBinding;
 import javafx.collections.*;
 import javafx.geometry.Insets;
+import javafx.geometry.NodeOrientation;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
@@ -17,71 +23,127 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
-import com.hamza.filetransfer.shared.Discovery;
-
+import java.io.IOException;
 import java.net.BindException;
 import java.net.InetAddress;
+import java.nio.file.Path;
 import java.util.List;
 
+/**
+ * The server window: status, certificate fingerprint and a table of transfers. Its text goes
+ * through the client's {@link I18n} bundles, and the language and theme it shows are its own
+ * choice, kept in {@code ~/.file-transfer/server-ui.properties}.
+ */
 public class ServerApp extends Application {
+
+    private static final String ARABIC = "العربية"; // language names are shown in their own language
+    private static final String ENGLISH = "English";
 
     private final ObservableList<TransferSession> sessions = FXCollections.observableArrayList();
     private DiscoveryResponder discovery; // kept open for the life of the app
 
+    /** Where the server window keeps its language and theme (separate from the client's). */
+    static Path appearanceFile() {
+        return Path.of(System.getProperty("user.home"), ".file-transfer", "server-ui.properties");
+    }
+
     @Override
     public void start(Stage stage) {
-
-        Application.setUserAgentStylesheet(new PrimerLight().getUserAgentStylesheet());
+        Appearance look = Appearance.load(appearanceFile());
+        ThemeManager.ThemeOption startTheme = ThemeManager.getThemes().stream()
+                .filter(t -> t.name().equals(look.theme())).findFirst()
+                .orElse(ThemeManager.getThemes().getFirst());
+        I18n.setLanguage(look.language());
+        ThemeManager.applyTheme(startTheme);
 
         TableView<TransferSession> table = new TableView<>(sessions);
 
-        TableColumn<TransferSession, String> fromCol = new TableColumn<>("From");
+        TableColumn<TransferSession, String> fromCol = column("column_from");
         fromCol.setCellValueFactory(c -> c.getValue().fromUserProperty());
 
-        TableColumn<TransferSession, String> toCol = new TableColumn<>("To");
+        TableColumn<TransferSession, String> toCol = column("column_to");
         toCol.setCellValueFactory(c -> c.getValue().toUserProperty());
 
-        TableColumn<TransferSession, String> fileCol = new TableColumn<>("File");
+        TableColumn<TransferSession, String> fileCol = column("column_file");
         fileCol.setCellValueFactory(c -> c.getValue().fileNameProperty());
 
-        TableColumn<TransferSession, Double> progCol = new TableColumn<>("Progress");
+        TableColumn<TransferSession, Double> progCol = column("column_progress");
         progCol.setCellValueFactory(c -> c.getValue().progressProperty().asObject());
         progCol.setCellFactory(ProgressBarTableCell.forTableColumn());
 
-        TableColumn<TransferSession, String> statusCol = new TableColumn<>("Status");
-        statusCol.setCellValueFactory(c -> c.getValue().statusProperty());
+        TableColumn<TransferSession, String> statusCol = column("column_status");
+        // Sessions keep language-neutral codes (RECEIVING, DONE...); translate for display only.
+        statusCol.setCellValueFactory(c -> {
+            TransferSession s = c.getValue();
+            return Bindings.createStringBinding(() -> I18n.transferStatus(s.statusProperty().get()),
+                    s.statusProperty(), I18n.bundleProperty());
+        });
 
         table.getColumns().addAll(fromCol, toCol, fileCol, progCol, statusCol);
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+        table.setPlaceholder(new Label(""));
 
-        Label info = new Label("Starting server...");
+        Label info = new Label();
+        info.textProperty().bind(I18n.bind("server_starting"));
+        info.setWrapText(true);
 
         // Clients show this fingerprint the first time they connect; users compare the two
         // before trusting the server. Read-only text field so it can be selected and copied.
         TextField fingerprint = new TextField();
         fingerprint.setEditable(false);
         fingerprint.setPrefColumnCount(70);
-        Label fingerprintLabel = new Label("Certificate fingerprint (SHA-256):");
+        fingerprint.setNodeOrientation(NodeOrientation.LEFT_TO_RIGHT); // hex reads left to right, also in Arabic
+        Label fingerprintLabel = new Label();
+        fingerprintLabel.textProperty().bind(I18n.bind("server_fingerprint"));
         fingerprintLabel.setMinWidth(Region.USE_PREF_SIZE); // never cut to "Certifica..."
         HBox fingerprintRow = new HBox(8, fingerprintLabel, fingerprint);
         fingerprintRow.setAlignment(Pos.CENTER_LEFT);
         HBox.setHgrow(fingerprint, Priority.ALWAYS);
 
-        VBox top = new VBox(6, info, fingerprintRow);
+        // Language and theme, remembered for the next start
+        ComboBox<String> langPicker = new ComboBox<>(FXCollections.observableArrayList(ENGLISH, ARABIC));
+        langPicker.getSelectionModel().select("ar".equals(look.language()) ? ARABIC : ENGLISH);
+        ComboBox<ThemeManager.ThemeOption> themePicker = new ComboBox<>(ThemeManager.getThemes());
+        themePicker.getSelectionModel().select(startTheme);
+        Label langLabel = new Label();
+        langLabel.textProperty().bind(I18n.bind("language"));
+        Label themeLabel = new Label();
+        themeLabel.textProperty().bind(I18n.bind("theme"));
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+        HBox infoRow = new HBox(8, info, spacer, langLabel, langPicker, themeLabel, themePicker);
+        infoRow.setAlignment(Pos.CENTER_LEFT);
+        HBox.setHgrow(info, Priority.SOMETIMES);
+        for (Region r : List.of(langLabel, langPicker, themeLabel, themePicker)) r.setMinWidth(Region.USE_PREF_SIZE);
+
+        VBox top = new VBox(8, infoRow, fingerprintRow);
         top.getStyleClass().add("topbar");
 
         VBox card = new VBox(10, table);
         card.getStyleClass().add("card");
+        VBox.setVgrow(table, Priority.ALWAYS);
 
         BorderPane root = new BorderPane();
         root.setTop(top);
         root.setCenter(card);
         BorderPane.setMargin(card, new Insets(12));
+        applyOrientation(root);
 
-        Scene scene = new Scene(root, 900, 500);
+        // Handlers are set after the start values are selected, so selecting them saves nothing.
+        langPicker.setOnAction(e -> {
+            I18n.setLanguage(ARABIC.equals(langPicker.getValue()) ? "ar" : "en");
+            applyOrientation(root);
+            rememberAppearance(langPicker, themePicker);
+        });
+        themePicker.setOnAction(e -> {
+            ThemeManager.applyTheme(themePicker.getValue());
+            rememberAppearance(langPicker, themePicker);
+        });
+
+        Scene scene = new Scene(root, 1000, 520);
         scene.getStylesheets().add(getClass().getResource("/styles/app.css").toExternalForm());
 
-        stage.setTitle("File Transfer - Server");
+        stage.titleProperty().bind(I18n.bind("server_title"));
         // The client icon with a server badge (drawn by packaging/IconMaker.java).
         for (int size : new int[]{16, 24, 32, 48, 64, 128, 256}) {
             stage.getIcons().add(new Image(getClass().getResource("/icons/server-" + size + ".png").toExternalForm()));
@@ -110,16 +172,20 @@ public class ServerApp extends Application {
                         }
                 ).startAsync();
 
-                String discovery = startDiscovery(config.port());
+                StringBinding discoveryLine = startDiscovery(config.port());
                 ServerConfig running = config;
                 Platform.runLater(() -> {
-                    info.setText("Server running on port " + running.port() + " (TLS). Storage: " + running.storageDir()
-                            + System.lineSeparator() + discovery);
+                    // Numbers go in as text, so the port is never shown as "5,000".
+                    info.textProperty().bind(Bindings.concat(
+                            I18n.bind("server_running", Integer.toString(running.port())), System.lineSeparator(),
+                            I18n.bind("server_storage", leftToRight(running.storageDir().toString())), System.lineSeparator(),
+                            discoveryLine));
                     fingerprint.setText(tls.fingerprint());
                 });
             } catch (Exception e) {
-                String why = startFailure(e, config);
-                Platform.runLater(() -> info.setText("Server failed to start: " + why));
+                StringBinding why = startFailure(e, config);
+                Platform.runLater(() -> info.textProperty().bind(Bindings.createStringBinding(
+                        () -> I18n.get("server_failed", why.get()), why, I18n.bundleProperty())));
             }
         }, "server-start");
         starter.setDaemon(true);
@@ -127,12 +193,12 @@ public class ServerApp extends Application {
     }
 
     /** Answers "Find servers" from clients. Optional: the server works without it. Returns a status line. */
-    private String startDiscovery(int tcpPort) {
+    private StringBinding startDiscovery(int tcpPort) {
         try {
             discovery = new DiscoveryResponder(Discovery.PORT, tcpPort, serverName());
-            return "LAN discovery: on (UDP " + Discovery.PORT + "). Clients can use \"Find servers\".";
+            return I18n.bind("server_discovery_on", Integer.toString(Discovery.PORT));
         } catch (Exception e) {
-            return "LAN discovery: off (" + e.getMessage() + "). Clients must type this computer's address.";
+            return I18n.bind("server_discovery_off", leftToRight(String.valueOf(e.getMessage())));
         }
     }
 
@@ -145,12 +211,41 @@ public class ServerApp extends Application {
     }
 
     /** A message that says what to change, for the errors people actually hit. */
-    static String startFailure(Exception e, ServerConfig config) {
+    static StringBinding startFailure(Exception e, ServerConfig config) {
         if (e instanceof BindException && config != null) {
-            return "port " + config.port() + " is already in use (is another server running?). "
-                    + "Start with --port <number> or set port=<number> in " + ServerConfig.CONFIG_FILE + ".";
+            return I18n.bind("server_port_in_use", Integer.toString(config.port()), ServerConfig.CONFIG_FILE);
         }
-        if (e instanceof IllegalArgumentException) return e.getMessage();
-        return e.getMessage() == null ? e.toString() : e.getMessage();
+        String detail = leftToRight(e.getMessage() == null ? e.toString() : e.getMessage());
+        return Bindings.createStringBinding(() -> detail);
+    }
+
+    /**
+     * Keeps a path or an English message in reading order inside Arabic text (a left-to-right
+     * embedding, U+202A ... U+202C); without it a leading "--" or "\" can jump to the other end.
+     * Invisible in English. The Arabic bundle uses the same characters around "--port <رقم>".
+     */
+    static String leftToRight(String text) {
+        return "‪" + text + "‬";
+    }
+
+    private static <T> TableColumn<TransferSession, T> column(String key) {
+        TableColumn<TransferSession, T> c = new TableColumn<>();
+        c.textProperty().bind(I18n.bind(key));
+        return c;
+    }
+
+    private static void applyOrientation(BorderPane root) {
+        root.setNodeOrientation(I18n.isRightToLeft() ? NodeOrientation.RIGHT_TO_LEFT : NodeOrientation.LEFT_TO_RIGHT);
+    }
+
+    /** Saves the picked language and theme. A failure only loses the convenience. */
+    private static void rememberAppearance(ComboBox<String> langPicker, ComboBox<ThemeManager.ThemeOption> themePicker) {
+        if (langPicker.getValue() == null || themePicker.getValue() == null) return;
+        try {
+            new Appearance(ARABIC.equals(langPicker.getValue()) ? "ar" : "en", themePicker.getValue().name())
+                    .save(appearanceFile());
+        } catch (IOException | RuntimeException e) {
+            System.err.println("Could not save the server window's language and theme: " + e);
+        }
     }
 }

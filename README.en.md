@@ -25,7 +25,7 @@ A JavaFX app for sending files and chatting between computers on a local network
 - **Arabic and English UI**, switchable while the app is running, with right-to-left layout for Arabic.
 - **Translated error messages**: the server sends only an error code, and the client shows it in the UI language.
 - **Several themes** from AtlantaFX: Primer, Nord and Cupertino (light and dark), and Dracula.
-- **Server window** with a table of transfers and the progress of each one.
+- **Server window** with a table of transfers and the progress of each one, in Arabic or English and any of the themes, remembered for next time.
 
 ### Accounts
 - The first login with a new name registers the account. Passwords are stored as PBKDF2 hashes.
