@@ -2,8 +2,12 @@ package com.hamza.filetransfer.client;
 
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.beans.InvalidationListener;
 import javafx.beans.binding.Bindings;
 import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.IntegerProperty;
+import javafx.beans.property.SimpleIntegerProperty;
+import javafx.collections.ListChangeListener;
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.geometry.Orientation;
@@ -37,6 +41,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.function.BooleanSupplier;
 
 public class ClientApp extends Application {
 
@@ -60,6 +65,23 @@ public class ClientApp extends Application {
     private KnownServers knownServers; // servers whose TLS certificate this user trusted
     private String activePeer;
     private ListView<ChatMessage> chatListRef;
+    private ListView<UserItem> usersViewRef;
+    private Stage mainStage;
+
+    /** Shows a desktop notification; {@link DesktopNotifier} in the app, a recorder in tests. */
+    interface Notifier extends AutoCloseable {
+        void show(String sender, String title, String text);
+
+        @Override
+        void close();
+    }
+
+    private static final long NOTIFY_QUIET_MILLIS = 4000;
+    Notifier notifier;               // set in start() unless a test set it first
+    BooleanSupplier windowInFront;   // "is the user looking at the app?"; tests may replace it
+    private final BooleanProperty notifyEnabled = new SimpleBooleanProperty(true);
+    private final Map<String, Long> lastNotified = new HashMap<>();
+    private final IntegerProperty totalUnread = new SimpleIntegerProperty(); // shown in the window title
 
     private boolean resorting;
 
@@ -79,6 +101,30 @@ public class ClientApp extends Application {
     @Override
     public void start(Stage stage) throws Exception {
         knownServers = new KnownServers(KnownServers.defaultLocation());
+        mainStage = stage;
+        if (windowInFront == null) windowInFront = stage::isFocused;
+        notifyEnabled.set(NotifySetting.load(NotifySetting.defaultLocation()).enabled());
+        if (notifier == null) {
+            notifier = DesktopNotifier.supported()
+                    ? new DesktopNotifier("File Transfer", this::openChatFromNotification)
+                    : new Notifier() {
+                        public void show(String sender, String title, String text) { }
+                        public void close() { }
+                    };
+        }
+        // Total unread across all chats, for the window title.
+        InvalidationListener recount = o -> totalUnread.set(
+                userItems.stream().mapToInt(u -> u.unreadCountProperty().get()).sum());
+        userItems.addListener((ListChangeListener<UserItem>) ch -> {
+            while (ch.next()) {
+                for (UserItem u : ch.getAddedSubList()) u.unreadCountProperty().addListener(recount);
+            }
+            recount.invalidated(null);
+        });
+        // Coming back to the window: the open chat's new messages are now seen.
+        stage.focusedProperty().addListener((obs, was, focused) -> {
+            if (focused && activePeer != null) clearUnread(activePeer);
+        });
         Appearance look = Appearance.load(Appearance.defaultLocation());
         ThemeManager.ThemeOption startTheme = ThemeManager.getThemes().stream()
                 .filter(t -> t.name().equals(look.theme())).findFirst()
@@ -148,6 +194,13 @@ public class ClientApp extends Application {
         GridPane appearanceForm = form();
         appearanceForm.addRow(0, label("language"), langPicker);
         appearanceForm.addRow(1, label("theme"), themePicker);
+        CheckBox cbNotify = new CheckBox();
+        cbNotify.textProperty().bind(I18n.bind("notify_checkbox"));
+        cbNotify.setWrapText(true);
+        cbNotify.setSelected(notifyEnabled.get());
+        notifyEnabled.bind(cbNotify.selectedProperty());
+        cbNotify.selectedProperty().addListener((obs, was, on) -> rememberNotify(on));
+        appearanceForm.addRow(2, label("notifications"), cbNotify);
 
         // ===== Top bar: status, connect/disconnect, panel toggles, settings =====
         lblStatus.getStyleClass().add("connection-status");
@@ -184,6 +237,7 @@ public class ClientApp extends Application {
         // IMPORTANT CHANGE:
         // Instead of SortedList + "setAll" hack, we keep a FilteredList and sort userItems in-place using resortUsers().
         ListView<UserItem> usersView = new ListView<>(filteredUsers);
+        usersViewRef = usersView;
         usersView.setPrefWidth(300);
         usersView.setCellFactory(lv -> new UserCell());
 
@@ -387,7 +441,10 @@ public class ClientApp extends Application {
         DayClock.todayProperty().addListener((obs, oldDay, newDay) -> chatList.refresh());
         DayClock.start();
 
-        stage.titleProperty().bind(I18n.bind("app_title"));
+        // "(3) File Transfer Chat": unread messages show in the taskbar too.
+        stage.titleProperty().bind(Bindings.createStringBinding(
+                () -> totalUnread.get() > 0 ? "(" + totalUnread.get() + ") " + I18n.get("app_title") : I18n.get("app_title"),
+                totalUnread, I18n.bundleProperty()));
         // Title bar and taskbar icon instead of Java's (drawn by packaging/IconMaker.java).
         for (int size : new int[]{16, 24, 32, 48, 64, 128, 256}) {
             stage.getIcons().add(new Image(getClass().getResource("/icons/client-" + size + ".png").toExternalForm()));
@@ -432,6 +489,14 @@ public class ClientApp extends Application {
         fields.setHgrow(Priority.ALWAYS);
         g.getColumnConstraints().addAll(labels, fields);
         return g;
+    }
+
+    private static void rememberNotify(boolean on) {
+        try {
+            new NotifySetting(on).save(NotifySetting.defaultLocation());
+        } catch (IOException | RuntimeException e) {
+            System.err.println("Could not save the notification setting: " + e);
+        }
     }
 
     /** Saves the panel widths and which panels are shown. A failure only loses the convenience. */
@@ -816,10 +881,9 @@ public class ClientApp extends Application {
             if (conn != c) return;
             long ms = FileTypeUtil.parseIsoMillis(evt.timestamp());
             bumpUnreadAndPreview(evt.fromUser(), "[MSG] " + I18n.get("preview_new_message"), ms);
-            if (evt.fromUser().equals(activePeer)) {
-                clearUnread(activePeer);
-                c.requestThread(activePeer);
-            }
+            if (evt.fromUser().equals(activePeer)) c.requestThread(activePeer);
+            // The push carries no text (only the server has it), so the notification can't leak it either.
+            notifyNewMessage(evt.fromUser(), I18n.get("preview_new_message"));
             resortUsers();
         });
         c.setOnIncoming(fileEvt -> {
@@ -828,10 +892,8 @@ public class ClientApp extends Application {
             String fileName = fileEvt.fileNameProperty().get();
             long ms = FileTypeUtil.parseIsoMillis(fileEvt.timestampProperty().get());
             bumpUnreadAndPreview(from, FileTypeUtil.previewPrefixForFile(fileName) + fileName, ms);
-            if (from.equals(activePeer)) {
-                clearUnread(activePeer);
-                c.requestThread(activePeer);
-            }
+            if (from.equals(activePeer)) c.requestThread(activePeer);
+            notifyNewMessage(from, I18n.get("notify_file", fileName));
             resortUsers();
         });
 
@@ -882,9 +944,40 @@ public class ClientApp extends Application {
 
         item.updateLastActivity(activityMillis);
 
-        if (activePeer == null || !activePeer.equals(fromUser)) {
+        // Read only if it lands in the open chat while the window is in front, where the user sees it.
+        if (!fromUser.equals(activePeer) || !windowInFront.getAsBoolean()) {
             item.bumpUnread();
         }
+    }
+
+    /**
+     * A Windows notification for something new from {@code from}, unless the user is looking at
+     * the app or turned notifications off. A burst from one sender gives one notification.
+     */
+    private void notifyNewMessage(String from, String text) {
+        if (!notifyEnabled.get() || windowInFront.getAsBoolean()) return;
+        long now = System.currentTimeMillis();
+        Long last = lastNotified.get(from);
+        if (last != null && now - last < NOTIFY_QUIET_MILLIS) return;
+        lastNotified.put(from, now);
+        notifier.show(from, from, text);
+    }
+
+    /** Clicking a notification: bring the window back and open that sender's chat. */
+    private void openChatFromNotification(String peer) {
+        Platform.runLater(() -> {
+            mainStage.setIconified(false);
+            mainStage.show();
+            mainStage.toFront();
+            mainStage.requestFocus();
+            UserItem item = peer == null ? null : userIndex.get(peer);
+            if (item != null) usersViewRef.getSelectionModel().select(item);
+        });
+    }
+
+    @Override
+    public void stop() {
+        if (notifier != null) notifier.close(); // removes the tray icon, so the JVM can exit
     }
 
     private void clearUnread(String user) {
