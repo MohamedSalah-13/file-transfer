@@ -3,6 +3,9 @@ module com.hamza.filetransfer {
 
     requires atlantafx.base;
 
+    // New releases: check, download and install (see client.Updates)
+    requires com.hamza.updater;
+
     // Button icons (the Feather pack registers itself as an IkonHandler service)
     requires org.kordamp.ikonli.javafx;
     requires org.kordamp.ikonli.feather;
