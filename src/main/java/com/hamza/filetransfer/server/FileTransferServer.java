@@ -579,12 +579,27 @@ public class FileTransferServer {
                     sendError(out, lock, ErrorCode.NOT_YOUR_MESSAGE);
                     return;
                 }
-                if (!DELETED.equals(type)) {
-                    replaceWithPlaceholder(mine, meta);
+                // The recipient's side first and my copy LAST: if a step fails (or the server stops),
+                // my copy is still the original message, so I can just delete for everyone again.
+                // Every step skips what is already done, so a retry finishes the job.
+                String originalType = DELETED.equals(type) ? meta.getProperty("deletedType", "TEXT") : type;
+                try {
                     Path theirs = SafeNames.resolveInside(userThreadDir(peer, username), messageId + ".meta");
-                    if (Files.isRegularFile(theirs)) replaceWithPlaceholder(theirs, readMeta(theirs));
-                    if ("FILE".equals(type)) deleteInboxCopy(peer, messageId);
-                    notifyPeer = true;
+                    if (Files.isRegularFile(theirs)) {
+                        Properties theirMeta = readMeta(theirs);
+                        if (!DELETED.equals(theirMeta.getProperty("messageType"))) {
+                            replaceWithPlaceholder(theirs, theirMeta, originalType);
+                        }
+                    }
+                    if ("FILE".equals(originalType)) deleteInboxCopy(peer, messageId);
+                    if (!DELETED.equals(type)) {
+                        replaceWithPlaceholder(mine, meta, originalType);
+                        notifyPeer = true;
+                    }
+                } catch (IOException e) {
+                    System.err.println("Deleting " + messageId + " for everyone stopped part way: " + e.getMessage());
+                    sendError(out, lock, ErrorCode.DELETE_INCOMPLETE);
+                    return;
                 }
             }
         }
@@ -604,13 +619,14 @@ public class FileTransferServer {
     }
 
     /** Keeps only who, when and the id; the text or file name is gone from the server. */
-    private void replaceWithPlaceholder(Path metaFile, Properties meta) throws IOException {
+    private void replaceWithPlaceholder(Path metaFile, Properties meta, String originalType) throws IOException {
         Properties p = new Properties();
         for (String key : List.of("messageId", "direction", "fromUser", "toUser", "timestamp", "timestampMillis")) {
             String v = meta.getProperty(key);
             if (v != null) p.setProperty(key, v);
         }
         p.setProperty("messageType", DELETED);
+        p.setProperty("deletedType", originalType); // TEXT or FILE, so a retry knows to clean up a file
         p.setProperty("deletedAt", Instant.now().toString());
         // Encrypted like every .meta, bound to the FINAL path (readMeta checks it), then moved over the
         // old one atomically: a crash leaves either the old message or the placeholder, never half of one.

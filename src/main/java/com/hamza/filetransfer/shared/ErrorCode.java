@@ -41,6 +41,8 @@ public final class ErrorCode {
     public static final String NOT_YOUR_MESSAGE = "not_your_message";
     /** args: the scope that was sent */
     public static final String BAD_DELETE_SCOPE = "bad_delete_scope";
+    /** DELETE_MESSAGE for everyone stopped part way; the sender's copy is untouched, so it can be retried. */
+    public static final String DELETE_INCOMPLETE = "delete_incomplete";
 
     private ErrorCode() {}
 }

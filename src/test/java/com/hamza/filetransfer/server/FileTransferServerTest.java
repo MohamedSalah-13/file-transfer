@@ -295,6 +295,44 @@ class FileTransferServerTest {
     }
 
     @Test
+    void aDeleteForEveryoneThatFailsPartWayCanBeRetried() throws Exception {
+        Wire ali = login("Ali", "secret1");
+        Wire bob = login("bob", "secret2");
+        bob.sendText("Ali", "sent by mistake");
+        String id = bob.expectSendOk();
+        assertEquals(Protocol.INCOMING_TEXT, ali.readUTF());
+        ali.readUTF(); ali.readUTF(); ali.readUTF();
+
+        // Ali's copy can't be read for now (damaged): the delete stops on her side...
+        Path aliCopy = storage.resolve("users/Ali/threads/bob/" + id + ".meta");
+        byte[] good = Files.readAllBytes(aliCopy);
+        Files.write(aliCopy, "not an encrypted file".getBytes(StandardCharsets.UTF_8));
+        bob.deleteMessage("Ali", id, Protocol.DELETE_FOR_EVERYONE);
+        assertEquals(ErrorCode.DELETE_INCOMPLETE, bob.expectError());
+        // ...and bob's copy is untouched, so "Delete for everyone" is still there to retry
+        assertEquals(List.of(id + " OUT TEXT sent by mistake"), bob.listThread("Ali"));
+        ali.socket.setSoTimeout(300);
+        assertThrows(java.net.SocketTimeoutException.class, ali::readUTF, "Ali is not told yet");
+        ali.socket.setSoTimeout(10_000);
+
+        // once her copy is readable again, the retry finishes the job
+        Files.write(aliCopy, good);
+        bob.deleteMessage("Ali", id, Protocol.DELETE_FOR_EVERYONE);
+        bob.expectDeleteOk(id);
+        assertEquals(Protocol.MESSAGE_DELETED, ali.readUTF());
+        assertEquals(id, ali.readUTF());
+        assertEquals("bob", ali.readUTF());
+        assertEquals(List.of(id + " OUT DELETED"), bob.listThread("Ali"));
+        assertEquals(List.of(id + " IN DELETED"), ali.listThread("bob"));
+
+        // deleting again is harmless: OK, and Ali isn't told twice
+        bob.deleteMessage("Ali", id, Protocol.DELETE_FOR_EVERYONE);
+        bob.expectDeleteOk(id);
+        ali.socket.setSoTimeout(300);
+        assertThrows(java.net.SocketTimeoutException.class, ali::readUTF);
+    }
+
+    @Test
     void onlyTheSenderCanDeleteForEveryone() throws Exception {
         Wire ali = login("Ali", "secret1");
         Wire bob = login("bob", "secret2");
