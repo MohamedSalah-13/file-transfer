@@ -984,6 +984,10 @@ public class ClientApp extends Application {
                     }
                     Arrays.fill(password, '\0');
                     setStatus(lblStatus, "status_connect_failed", err);
+                    // A server on a newer protocol means this copy is the one behind: look for its update
+                    // now instead of at the next six-hour look. Behind an older server there is nothing to
+                    // install here; the server's own window offers its update.
+                    if (Updates.serverIsNewer(err) && updates != null) updates.checkQuietly();
                 });
             }
         }, "connect");
