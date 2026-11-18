@@ -24,6 +24,7 @@ A JavaFX app for sending files and chatting between computers on a local network
 
 ### Chat and files
 - **Text chat and file sending** between users. The server keeps the history of every conversation. "Attach Files" picks one or several files at once (Ctrl- or Shift-click), and each is sent as its own transfer.
+- **Delete messages**: right-click a message (or press Delete) and choose "Delete...". "Delete for me" removes it from your chat only; "Delete for everyone" (your own messages only) removes it on both sides and leaves "This message was deleted" in its place, and a file's bytes are deleted from the server. The other side sees it right away.
 - **Search in a chat**: a search box above the open chat (Ctrl+F) looks through messages and file names and highlights what it finds; Enter goes to the older match, Shift+Enter to the newer one. It ignores case, accents and Arabic diacritics, and matches the Arabic letters people type interchangeably (أ/ا, ة/ه, ى/ي).
 - **Buttons on file bubbles**: "Download" for a file you don't have yet, "Open" and "Show in folder" for one on your computer (downloaded, or sent from here), remembered across restarts. A file that can run programs (an `.exe`, a `.bat`...) asks first, with Cancel as the default.
 - **Drag and drop**: drag one or more files from Explorer onto the open chat to send them right away. While dragging, a frame says what will be sent and to whom, or why it can't be (not connected, no user selected). Folders are skipped.

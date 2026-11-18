@@ -312,6 +312,13 @@ public class ClientApp extends Application {
         chatList.setCellFactory(lv -> new ChatBubbleCell());
 
         // double-click download (only if downloadable)
+        chatList.setOnKeyPressed(e -> { // Delete on a selected message: same as right-click > Delete...
+            ChatMessage m = chatList.getSelectionModel().getSelectedItem();
+            if (e.getCode() == KeyCode.DELETE && m != null) {
+                askToDelete(m);
+                e.consume();
+            }
+        });
         chatList.setOnMouseClicked(e -> {
             if (e.getClickCount() == 2) {
                 ChatMessage m = chatList.getSelectionModel().getSelectedItem();
@@ -724,6 +731,61 @@ public class ClientApp extends Application {
         if (dir == null) return;
         lastDownloadFolder = dir.toPath();
         downloadInto(dir.toPath(), messageId, displayName);
+    }
+
+    /**
+     * Asks how to delete a message: "for everyone" only on a message I sent (and not already
+     * deleted), "for me" always; Cancel is the default. Then asks the server and reloads the chat.
+     */
+    void askToDelete(ChatMessage m) {
+        if (conn == null || activePeer == null) return;
+        String peer = activePeer;
+        boolean mineToRemove = m.outgoingProperty().get() && m.typeProperty().get() != ChatMessage.Type.DELETED;
+
+        ButtonType forEveryone = new ButtonType(I18n.get("delete_for_everyone"), ButtonBar.ButtonData.OTHER);
+        ButtonType forMe = new ButtonType(I18n.get("delete_for_me"), ButtonBar.ButtonData.OTHER);
+        ButtonType cancel = new ButtonType(I18n.get("cancel"), ButtonBar.ButtonData.CANCEL_CLOSE);
+        Alert alert = mineToRemove
+                ? new Alert(Alert.AlertType.CONFIRMATION, "", forEveryone, forMe, cancel)
+                : new Alert(Alert.AlertType.CONFIRMATION, "", forMe, cancel);
+        alert.setTitle(I18n.get("delete_title"));
+        alert.setHeaderText(I18n.get("delete_title"));
+        String what = switch (m.typeProperty().get()) {
+            case TEXT -> shorten(m.textProperty().get());
+            case FILE -> m.fileNameProperty().get();
+            case DELETED -> I18n.get(m.outgoingProperty().get() ? "deleted_by_you" : "deleted_by_them");
+        };
+        Label quote = new Label(what);
+        quote.getStyleClass().add("delete-quote");
+        quote.setWrapText(true);
+        Label note = new Label(I18n.get(mineToRemove ? "delete_note_everyone" : "delete_note_me", peer));
+        note.setWrapText(true);
+        alert.getDialogPane().setContent(new VBox(10, quote, note));
+        alert.getDialogPane().setPrefWidth(560);
+        if (mineToRemove) Icons.on((Button) alert.getDialogPane().lookupButton(forEveryone), Feather.TRASH_2);
+        Icons.on((Button) alert.getDialogPane().lookupButton(forMe), Feather.TRASH);
+        for (ButtonType t : alert.getButtonTypes()) {
+            Button b = (Button) alert.getDialogPane().lookupButton(t);
+            b.setDefaultButton(t == cancel); // Enter never deletes
+            b.setMinWidth(Region.USE_PREF_SIZE); // never "Delete for ..."
+            ButtonBar.setButtonUniformSize(b, false); // the uniform width ignores the icons
+        }
+
+        ButtonType choice = showLocalized(mainStage, alert).orElse(cancel);
+        if (choice == cancel) return;
+        ClientConnection c = conn;
+        c.deleteMessage(peer, m.messageIdProperty().get(), choice == forEveryone);
+        c.requestThread(peer); // queued after the delete, so the reply shows the result
+    }
+
+    /** The open chat's messages, oldest first (for tests). */
+    ObservableList<ChatMessage> chatMessagesForTest() {
+        return chatMessages;
+    }
+
+    private static String shorten(String text) {
+        String t = text == null ? "" : text.strip();
+        return t.length() > 120 ? t.substring(0, 120) + "..." : t;
     }
 
     /**
@@ -1149,6 +1211,11 @@ public class ClientApp extends Application {
             updateLastPreviewFromThread(peer, msgs);
             resortUsers();
         });
+        c.setOnMessageDeleted((peer, messageId) -> {
+            if (conn != c) return;
+            // Reload that chat: it shows the placeholder if open, and fixes its preview either way.
+            c.requestThread(peer);
+        });
         c.setOnIncomingText(evt -> {
             if (conn != c) return;
             long ms = FileTypeUtil.parseIsoMillis(evt.timestamp());
@@ -1261,12 +1328,18 @@ public class ClientApp extends Application {
     private void updateLastPreviewFromThread(String peer, List<ChatMessage> msgs) {
         if (peer == null) return;
         UserItem item = userIndex.get(peer);
-        if (item == null || msgs == null || msgs.isEmpty()) return;
+        if (item == null || msgs == null) return;
+        if (msgs.isEmpty()) { // every message deleted for me
+            item.setLastPreview("");
+            return;
+        }
 
         ChatMessage last = msgs.get(msgs.size() - 1);
 
         String preview;
-        if (last.typeProperty().get() == ChatMessage.Type.TEXT) {
+        if (last.typeProperty().get() == ChatMessage.Type.DELETED) {
+            preview = I18n.get(last.outgoingProperty().get() ? "deleted_by_you" : "deleted_by_them");
+        } else if (last.typeProperty().get() == ChatMessage.Type.TEXT) {
             String t = last.textProperty().get();
             preview = (t == null) ? "" : t.trim();
             if (preview.length() > 40) preview = preview.substring(0, 40) + "...";
@@ -1460,6 +1533,7 @@ public class ClientApp extends Application {
             if (empty || item == null) {
                 setGraphic(null);
                 setText(null);
+                setContextMenu(null);
                 return;
             }
 
@@ -1471,7 +1545,14 @@ public class ClientApp extends Application {
             Node bodyNode;
             Node meta;
 
-            if (item.typeProperty().get() == ChatMessage.Type.TEXT) {
+            if (item.typeProperty().get() == ChatMessage.Type.DELETED) {
+                // A placeholder where the message was, so the conversation still reads right.
+                Label body = new Label(I18n.get(out ? "deleted_by_you" : "deleted_by_them"), Icons.of(Feather.SLASH));
+                body.getStyleClass().add("deleted-text");
+                bodyNode = body;
+                meta = metaLine(I18n.messageTime(item.timestampProperty().get()));
+
+            } else if (item.typeProperty().get() == ChatMessage.Type.TEXT) {
                 Label body = new Label(item.textProperty().get());
                 body.setWrapText(true);
                 bodyNode = body;
@@ -1521,10 +1602,16 @@ public class ClientApp extends Application {
             // Full date on hover; the bubble itself shows the short form.
             Tooltip.install(bubble, new Tooltip(I18n.messageTimeFull(item.timestampProperty().get())));
 
+            if (item.typeProperty().get() == ChatMessage.Type.DELETED) bubble.getStyleClass().add("bubble-deleted");
+
             HBox row = new HBox(bubble);
             row.setAlignment(out ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
 
             setGraphic(row);
+            // Right-click: Delete... (the Delete key on a selected message does the same)
+            MenuItem delete = new MenuItem(I18n.get("delete_menu"), Icons.of(Feather.TRASH_2));
+            delete.setOnAction(e -> askToDelete(item));
+            setContextMenu(new ContextMenu(delete));
         }
     }
 }

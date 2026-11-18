@@ -117,6 +117,104 @@ class FileTransferServerTest {
     }
 
     @Test
+    void deleteForMeRemovesOnlyMyCopy() throws Exception {
+        Wire ali = login("Ali", "secret1");
+        Wire bob = login("bob", "secret2");
+        bob.sendText("Ali", "hello ali");
+        String id = bob.expectSendOk();
+        assertEquals(Protocol.INCOMING_TEXT, ali.readUTF());
+        ali.readUTF(); ali.readUTF(); ali.readUTF();
+
+        ali.deleteMessage("bob", id, Protocol.DELETE_FOR_ME); // a received message: allowed for me
+        ali.expectDeleteOk(id);
+        assertEquals(List.of(), ali.listThread("bob"), "gone for Ali");
+        assertEquals(List.of(id + " OUT TEXT hello ali"), bob.listThread("Ali"), "bob still has it");
+        bob.socket.setSoTimeout(300);
+        assertThrows(java.net.SocketTimeoutException.class, bob::readUTF, "bob is not told");
+    }
+
+    @Test
+    void deleteForEveryoneLeavesPlaceholdersAndTellsThePeer() throws Exception {
+        Wire ali = login("Ali", "secret1");
+        Wire bob = login("bob", "secret2");
+        bob.sendText("Ali", "oops, wrong chat");
+        String id = bob.expectSendOk();
+        assertEquals(Protocol.INCOMING_TEXT, ali.readUTF());
+        ali.readUTF(); ali.readUTF(); ali.readUTF();
+
+        bob.deleteMessage("Ali", id, Protocol.DELETE_FOR_EVERYONE);
+        bob.expectDeleteOk(id);
+        assertEquals(Protocol.MESSAGE_DELETED, ali.readUTF());
+        assertEquals(id, ali.readUTF());
+        assertEquals("bob", ali.readUTF());
+        assertEquals(List.of(id + " OUT DELETED"), bob.listThread("Ali"));
+        assertEquals(List.of(id + " IN DELETED"), ali.listThread("bob"));
+        String stored = Files.readString(storage.resolve("users/Ali/threads/bob/" + id + ".meta"));
+        assertFalse(stored.contains("wrong chat"), "the text is gone from the server");
+
+        // the placeholder itself can be removed, for me only
+        ali.deleteMessage("bob", id, Protocol.DELETE_FOR_ME);
+        ali.expectDeleteOk(id);
+        assertEquals(List.of(), ali.listThread("bob"));
+    }
+
+    @Test
+    void onlyTheSenderCanDeleteForEveryone() throws Exception {
+        Wire ali = login("Ali", "secret1");
+        Wire bob = login("bob", "secret2");
+        bob.sendText("Ali", "keep this");
+        String id = bob.expectSendOk();
+        assertEquals(Protocol.INCOMING_TEXT, ali.readUTF());
+        ali.readUTF(); ali.readUTF(); ali.readUTF();
+
+        ali.deleteMessage("bob", id, Protocol.DELETE_FOR_EVERYONE);
+        assertEquals(ErrorCode.NOT_YOUR_MESSAGE, ali.expectError());
+        assertEquals(List.of(id + " OUT TEXT keep this"), bob.listThread("Ali"));
+        assertEquals(List.of(id + " IN TEXT keep this"), ali.listThread("bob"));
+    }
+
+    @Test
+    void deletingAFileForEveryoneRemovesItsBytes() throws Exception {
+        Wire ali = login("Ali", "secret1");
+        Wire bob = login("bob", "secret2");
+        Wire upload = transfer("bob", bob.token);
+        upload.sendFile("Ali", "photo.jpg", new byte[5000]);
+        String id = upload.expectSendOk();
+        assertEquals(Protocol.INCOMING_FILE, ali.readUTF());
+        for (int i = 0; i < 3; i++) ali.readUTF();
+        ali.in.readLong();
+        ali.readUTF();
+        Path inbox = storage.resolve("users/Ali/inbox");
+        assertTrue(Files.exists(inbox.resolve(id + ".bin")));
+
+        bob.deleteMessage("Ali", id, Protocol.DELETE_FOR_EVERYONE);
+        bob.expectDeleteOk(id);
+        assertFalse(Files.exists(inbox.resolve(id + ".bin")), "bytes gone");
+        assertFalse(Files.exists(inbox.resolve(id + ".meta")));
+        Wire download = transfer("Ali", ali.token);
+        download.out.writeUTF(Protocol.DOWNLOAD);
+        download.out.writeUTF(id);
+        download.out.flush();
+        assertEquals(ErrorCode.FILE_NOT_FOUND, download.expectError());
+    }
+
+    @Test
+    void badDeletesAreRejectedAndTheConnectionSurvives() throws Exception {
+        Wire ali = login("Ali", "secret1");
+        login("bob", "secret2");
+        ali.deleteMessage("bob", "11111111-1111-1111-1111-111111111111", Protocol.DELETE_FOR_ME);
+        assertEquals(ErrorCode.MESSAGE_NOT_FOUND, ali.expectError());
+        ali.deleteMessage("bob", "..\\..\\accounts", Protocol.DELETE_FOR_ME); // never becomes a path
+        assertEquals(ErrorCode.MESSAGE_NOT_FOUND, ali.expectError());
+        ali.deleteMessage("bob", "11111111-1111-1111-1111-111111111111", "EVERYTHING");
+        assertEquals(ErrorCode.BAD_DELETE_SCOPE, ali.expectError());
+        ali.deleteMessage("nobody", "11111111-1111-1111-1111-111111111111", Protocol.DELETE_FOR_ME);
+        assertEquals(ErrorCode.UNKNOWN_USER, ali.expectError());
+        assertTrue(Files.exists(storage.resolve("accounts.properties")));
+        assertTrue(ali.listUsers().contains("Ali"), "connection still usable");
+    }
+
+    @Test
     void aNewLoginReplacesTheOldSession() throws Exception {
         Wire first = login("bob", "secret2");
         Wire second = login("bob", "secret2"); // used to be HELLO_TAKEN
@@ -458,6 +556,41 @@ class FileTransferServerTest {
             out.writeLong(data.length);
             out.write(data);
             out.flush();
+        }
+
+        void deleteMessage(String peer, String messageId, String scope) throws IOException {
+            out.writeUTF(Protocol.DELETE_MESSAGE);
+            out.writeUTF(peer);
+            out.writeUTF(messageId);
+            out.writeUTF(scope);
+            out.flush();
+        }
+
+        void expectDeleteOk(String messageId) throws IOException {
+            assertEquals(Protocol.DELETE_OK, in.readUTF());
+            assertEquals(messageId, in.readUTF());
+        }
+
+        /** One line per message: "id DIRECTION TYPE detail" (detail: the text, the file name, or nothing). */
+        List<String> listThread(String peer) throws IOException {
+            out.writeUTF(Protocol.LIST_THREAD);
+            out.writeUTF(peer);
+            out.flush();
+            assertEquals(Protocol.THREAD_MESSAGES, in.readUTF());
+            assertEquals(peer, in.readUTF());
+            int n = in.readInt();
+            List<String> lines = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                String id = in.readUTF(), direction = in.readUTF(), type = in.readUTF();
+                in.readUTF(); in.readUTF(); in.readUTF(); // from, to, timestamp
+                String detail = switch (type) {
+                    case "TEXT" -> in.readUTF();
+                    case "FILE" -> { String name = in.readUTF(); in.readLong(); in.readBoolean(); yield name; }
+                    default -> "";
+                };
+                lines.add((id + " " + direction + " " + type + " " + detail).strip());
+            }
+            return lines;
         }
 
         List<String> listUsers() throws IOException {

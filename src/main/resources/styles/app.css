@@ -220,3 +220,31 @@
 .search-count:blocked {
     -fx-text-fill: -color-danger-fg;
 }
+
+/* A message deleted for everyone: a faded placeholder in its place */
+.bubble.bubble-deleted {
+    -fx-opacity: 0.7;
+    -fx-border-style: segments(6, 4);
+}
+
+.bubble-out.bubble-deleted {
+    -fx-background-color: -color-bg-subtle;
+    -fx-border-color: -color-border-default;
+}
+
+.bubble-out.bubble-deleted .label {
+    -fx-text-fill: -color-fg-muted;
+}
+
+.deleted-text {
+    -fx-font-style: italic;
+    -fx-text-fill: -color-fg-muted;
+}
+
+.delete-quote {
+    -fx-padding: 8 10;
+    -fx-background-color: -color-bg-subtle;
+    -fx-background-radius: 8;
+    -fx-border-color: transparent transparent transparent -color-accent-emphasis;
+    -fx-border-width: 0 0 0 3;
+}
