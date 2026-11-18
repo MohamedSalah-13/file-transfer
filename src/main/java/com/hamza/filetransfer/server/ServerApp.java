@@ -165,12 +165,15 @@ public class ServerApp extends Application {
                 config = ServerConfig.load(args, ServerConfig.workDir());
                 AccountStore accounts = new AccountStore(config.accountsFile());
                 ServerTls tls = ServerTls.loadOrCreate(config.tlsDir());
+                StorageCrypto crypto = StorageCrypto.loadOrCreate(config.keysDir());
 
+                // On the first start after an upgrade this also encrypts the existing files.
                 new FileTransferServer(
                         config.port(),
                         config.usersDir(),
                         accounts,
                         tls.context(),
+                        crypto,
                         session -> {
                             // Called on the socket thread before any progress update.
                             session.deliverUpdatesOn(Platform::runLater);
@@ -185,6 +188,7 @@ public class ServerApp extends Application {
                     info.textProperty().bind(Bindings.concat(
                             I18n.bind("server_running", Integer.toString(running.port())), System.lineSeparator(),
                             I18n.bind("server_storage", leftToRight(running.storageDir().toString())), System.lineSeparator(),
+                            I18n.bind("server_encryption", leftToRight(crypto.keyFile().toString())), System.lineSeparator(),
                             discoveryLine));
                     fingerprint.setText(tls.fingerprint());
                 });

@@ -21,9 +21,11 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -38,6 +40,7 @@ class FileTransferServerTest {
     Path storage;
 
     private int port;
+    private StorageCrypto crypto;
     private SSLSocketFactory clientTls; // trusts exactly this server's certificate
     private final List<Wire> opened = new ArrayList<>();
 
@@ -52,7 +55,8 @@ class FileTransferServerTest {
             port = probe.getLocalPort();
         }
         AccountStore accounts = new AccountStore(storage.resolve("accounts.properties"));
-        new FileTransferServer(port, storage.resolve("users"), accounts, serverTls.context(), session -> {}).startAsync();
+        crypto = StorageCrypto.loadOrCreate(storage.resolve("keys"));
+        new FileTransferServer(port, storage.resolve("users"), accounts, serverTls.context(), crypto, session -> {}).startAsync();
 
         KnownServers known = new KnownServers(storage.resolve("known_servers.properties"));
         known.trust("127.0.0.1", port, serverTls.fingerprint());
@@ -64,8 +68,137 @@ class FileTransferServerTest {
     @Test
     void aBusyPortFailsAtStartInsteadOfSilently() throws Exception {
         AccountStore accounts = new AccountStore(storage.resolve("other-accounts.properties"));
-        FileTransferServer second = new FileTransferServer(port, storage.resolve("other-users"), accounts, serverTls.context(), s -> {});
+        FileTransferServer second = new FileTransferServer(port, storage.resolve("other-users"), accounts, serverTls.context(), crypto, s -> {});
         assertThrows(java.net.BindException.class, second::startAsync, "the first server already holds this port");
+    }
+
+    @Test
+    void storedFilesAndMessagesAreEncryptedOnDisk() throws Exception {
+        Wire ali = login("Ali", "secret1");
+        Wire bob = login("bob", "secret2");
+        byte[] data = "TOP-SECRET-FILE-CONTENT ".repeat(5000).getBytes(StandardCharsets.UTF_8);
+
+        bob.sendText("Ali", "secret-chat-text");
+        bob.expectSendOk();
+        Wire upload = transfer("bob", bob.token);
+        upload.sendFile("Ali", "secret-report.pdf", data);
+        upload.expectSendOk();
+
+        List<Path> stored;
+        try (var walk = Files.walk(storage.resolve("users"))) {
+            stored = walk.filter(Files::isRegularFile).toList();
+        }
+        assertEquals(6, stored.size(), "the .bin, its inbox .meta, and an IN + OUT thread .meta for each message: " + stored);
+        for (Path p : stored) {
+            String raw = new String(Files.readAllBytes(p), StandardCharsets.ISO_8859_1);
+            assertTrue(StorageCrypto.looksEncrypted(p), p + " is encrypted");
+            for (String secret : List.of("TOP-SECRET", "secret-chat-text", "secret-report", "fromUser")) {
+                assertFalse(raw.contains(secret), p + " leaks " + secret);
+            }
+        }
+
+        // ...and still reads back: the thread lists the text, the download returns the exact bytes.
+        assertArrayEquals(data, download(ali, "Ali", "secret-report.pdf"));
+    }
+
+    @Test
+    void plainFilesFromOlderVersionsAreEncryptedAtStartAndStillWork() throws Exception {
+        // What a 2.6.0 server left on disk: a plain .bin and plain .meta files.
+        Path users = storage.resolve("old-users");
+        String id = UUID.randomUUID().toString();
+        byte[] data = "old plain file".getBytes(StandardCharsets.UTF_8);
+        Path inbox = Files.createDirectories(users.resolve("Ali/inbox"));
+        Files.write(inbox.resolve(id + ".bin"), data);
+        Files.writeString(inbox.resolve(id + ".meta"), "messageId=" + id + "\nfromUser=bob\ntoUser=Ali\n"
+                + "fileName=old.txt\nfileSize=" + data.length + "\ntimestamp=2026-11-17T08:00:00Z\ntimestampMillis=1\n");
+        Files.writeString(inbox.resolve("left-over.meta.encrypting.tmp"), "from a crash during migration");
+
+        int oldPort;
+        try (ServerSocket probe = new ServerSocket(0)) {
+            oldPort = probe.getLocalPort();
+        }
+        AccountStore accounts = new AccountStore(storage.resolve("accounts.properties"));
+        new FileTransferServer(oldPort, users, accounts, serverTls.context(), crypto, s -> {}).startAsync();
+
+        assertTrue(StorageCrypto.looksEncrypted(inbox.resolve(id + ".bin")));
+        assertTrue(StorageCrypto.looksEncrypted(inbox.resolve(id + ".meta")));
+        assertFalse(Files.exists(inbox.resolve("left-over.meta.encrypting.tmp")), "temp file from a crash is removed");
+
+        // Ali logs in to that server and downloads the migrated file.
+        port = oldPort;
+        KnownServers known = new KnownServers(storage.resolve("known_servers.properties"));
+        known.trust("127.0.0.1", port, serverTls.fingerprint());
+        SSLContext context = SSLContext.getInstance(Tls.PROTOCOL);
+        context.init(null, new TrustManager[]{new TofuTrustManager(known, "127.0.0.1", port)}, null);
+        clientTls = context.getSocketFactory();
+        Wire ali = login("Ali", "secret1");
+        Wire transfer = transfer("Ali", ali.token);
+        transfer.out.writeUTF(Protocol.DOWNLOAD);
+        transfer.out.writeUTF(id);
+        transfer.out.flush();
+        assertEquals(Protocol.FILE, transfer.readUTF());
+        assertEquals("old.txt", transfer.readUTF());
+        assertEquals(data.length, transfer.in.readLong());
+        assertArrayEquals(data, transfer.in.readNBytes(data.length));
+    }
+
+    @Test
+    void aStoredFileMovedToAnotherInboxDoesNotDecrypt() throws Exception {
+        login("Ali", "secret1"); // creates the account
+        Wire bob = login("bob", "secret2");
+        Wire carol = login("carol", "secret3");
+        Wire upload = transfer("bob", bob.token);
+        upload.sendFile("Ali", "for-ali.txt", "only for Ali".getBytes(StandardCharsets.UTF_8));
+        String aliFile = upload.expectSendOk();
+        upload = transfer("bob", bob.token);
+        upload.sendFile("carol", "for-carol.txt", "for Carol".getBytes(StandardCharsets.UTF_8));
+        String carolFile = upload.expectSendOk();
+
+        // Someone with disk access copies Ali's file over Carol's: Carol must not get Ali's content.
+        Path users = storage.resolve("users");
+        Files.copy(users.resolve("Ali/inbox/" + aliFile + ".bin"), users.resolve("carol/inbox/" + carolFile + ".bin"),
+                StandardCopyOption.REPLACE_EXISTING);
+
+        Wire transfer = transfer("carol", carol.token);
+        transfer.out.writeUTF(Protocol.DOWNLOAD);
+        transfer.out.writeUTF(carolFile);
+        transfer.out.flush();
+        assertEquals(Protocol.FILE, transfer.readUTF());
+        transfer.readUTF();
+        long size = transfer.in.readLong();
+        assertThrows(IOException.class, () -> transfer.in.readFully(new byte[(int) size]),
+                "the server stops instead of sending the moved file");
+    }
+
+    /** Waits for the INCOMING_FILE push for {@code fileName}, then downloads it on a TRANSFER socket. */
+    private byte[] download(Wire receiver, String user, String fileName) throws Exception {
+        String fileId = null;
+        while (fileId == null) {
+            String type = receiver.readUTF();
+            if (Protocol.INCOMING_TEXT.equals(type)) {
+                receiver.readUTF(); // id
+                receiver.readUTF(); // from
+                receiver.readUTF(); // timestamp
+            } else if (Protocol.INCOMING_FILE.equals(type)) {
+                String id = receiver.readUTF();
+                receiver.readUTF(); // from
+                String name = receiver.readUTF();
+                receiver.in.readLong();
+                receiver.readUTF(); // timestamp
+                if (name.equals(fileName)) fileId = id;
+            } else {
+                fail("unexpected push " + type);
+            }
+        }
+        Wire t = transfer(user, receiver.token);
+        t.out.writeUTF(Protocol.DOWNLOAD);
+        t.out.writeUTF(fileId);
+        t.out.flush();
+        assertEquals(Protocol.FILE, t.readUTF());
+        assertEquals(fileName, t.readUTF());
+        byte[] data = new byte[(int) t.in.readLong()];
+        t.in.readFully(data);
+        return data;
     }
 
     @Test
@@ -149,7 +282,10 @@ class FileTransferServerTest {
         assertEquals("bob", ali.readUTF());
         assertEquals(List.of(id + " OUT DELETED"), bob.listThread("Ali"));
         assertEquals(List.of(id + " IN DELETED"), ali.listThread("bob"));
-        String stored = Files.readString(storage.resolve("users/Ali/threads/bob/" + id + ".meta"));
+        Path placeholder = storage.resolve("users/Ali/threads/bob/" + id + ".meta");
+        assertTrue(StorageCrypto.looksEncrypted(placeholder), "the placeholder is encrypted like every .meta");
+        String stored = new String(crypto.decrypt(Files.readAllBytes(placeholder), "ali/threads/bob/" + id + ".meta"), StandardCharsets.UTF_8);
+        assertTrue(stored.contains("messageType=DELETED"), stored);
         assertFalse(stored.contains("wrong chat"), "the text is gone from the server");
 
         // the placeholder itself can be removed, for me only
@@ -248,10 +384,9 @@ class FileTransferServerTest {
         ali.readUTF(); // timestamp
 
         Path meta = storage.resolve("users/bob/threads/Ali/" + messageId + ".meta");
+        byte[] plain = crypto.decrypt(Files.readAllBytes(meta), "bob/threads/ali/" + messageId + ".meta");
         Properties p = new Properties();
-        try (Reader r = Files.newBufferedReader(meta, StandardCharsets.UTF_8)) {
-            p.load(r);
-        }
+        p.load(new StringReader(new String(plain, StandardCharsets.UTF_8)));
         assertEquals("Ali", p.getProperty("toUser"));
     }
 

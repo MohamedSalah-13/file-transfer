@@ -53,7 +53,17 @@ public class ReadmeScreenshots {
 
     private static final String PASSWORD = "demo-password";
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
+        try {
+            run(args);
+        } catch (Throwable t) {
+            // The JavaFX thread would keep the JVM alive after a failure: exit, so the script sees it.
+            t.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+    private static void run(String[] args) throws Exception {
         String lang = args[0];
         Path out = Path.of(args[1]).toAbsolutePath();
         int port = Integer.parseInt(args[2]);
