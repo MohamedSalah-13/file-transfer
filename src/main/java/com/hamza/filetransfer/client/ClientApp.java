@@ -28,6 +28,9 @@ import javafx.scene.input.TransferMode;
 import javafx.scene.layout.*;
 import javafx.scene.text.TextAlignment;
 import javafx.css.PseudoClass;
+import atlantafx.base.controls.CustomTextField;
+import atlantafx.base.theme.Styles;
+import org.kordamp.ikonli.feather.Feather;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
@@ -138,9 +141,9 @@ public class ClientApp extends Application {
         TextField tfUser = new TextField(last.user());
         PasswordField pfPassword = new PasswordField();
         pfPassword.promptTextProperty().bind(I18n.bind("password_prompt"));
-        Button btnConnect = new Button();
+        Button btnConnect = Icons.on(new Button(), Feather.LOG_IN);
         btnConnect.textProperty().bind(I18n.bind("connect"));
-        Button btnFind = new Button();
+        Button btnFind = Icons.on(new Button(), Feather.WIFI);
         btnFind.textProperty().bind(I18n.bind("find_servers"));
         btnFind.setOnAction(e -> findServers(settings.stage(), btnFind, tfHost, tfPort, pfPassword));
 
@@ -197,6 +200,7 @@ public class ClientApp extends Application {
         CheckBox cbNotify = new CheckBox();
         cbNotify.textProperty().bind(I18n.bind("notify_checkbox"));
         cbNotify.setWrapText(true);
+        cbNotify.setPrefWidth(330); // wrap the long text instead of widening the whole settings window
         cbNotify.setSelected(notifyEnabled.get());
         notifyEnabled.bind(cbNotify.selectedProperty());
         cbNotify.selectedProperty().addListener((obs, was, on) -> rememberNotify(on));
@@ -208,12 +212,14 @@ public class ClientApp extends Application {
         Button btnConnection = new Button();
         btnConnection.textProperty().bind(Bindings.when(connected)
                 .then(I18n.bind("disconnect")).otherwise(I18n.bind("connect")));
-        ToggleButton tgUsers = new ToggleButton();
+        btnConnection.graphicProperty().bind(Bindings.createObjectBinding(
+                () -> Icons.of(connected.get() ? Feather.LOG_OUT : Feather.LOG_IN), connected));
+        ToggleButton tgUsers = Icons.on(new ToggleButton(), Feather.USERS);
         tgUsers.textProperty().bind(I18n.bind("panel_users"));
-        ToggleButton tgTransfers = new ToggleButton();
+        ToggleButton tgTransfers = Icons.on(new ToggleButton(), Feather.REPEAT);
         tgTransfers.textProperty().bind(I18n.bind("transfers"));
-        Button btnSettings = new Button();
-        btnSettings.textProperty().bind(Bindings.concat("⚙ ", I18n.bind("settings")));
+        Button btnSettings = Icons.on(new Button(), Feather.SETTINGS);
+        btnSettings.textProperty().bind(I18n.bind("settings"));
         Region topSpacer = new Region();
         HBox.setHgrow(topSpacer, Priority.ALWAYS);
         HBox top = new HBox(8, lblStatus, topSpacer, btnConnection, new Separator(Orientation.VERTICAL),
@@ -225,7 +231,8 @@ public class ClientApp extends Application {
         }
 
         // ===== Left sidebar =====
-        TextField tfSearchUsers = new TextField();
+        CustomTextField tfSearchUsers = new CustomTextField(); // AtlantaFX: a text field with an icon inside
+        tfSearchUsers.setLeft(Icons.of(Feather.SEARCH));
         tfSearchUsers.promptTextProperty().bind(I18n.bind("search_prompt"));
 
         FilteredList<UserItem> filteredUsers = new FilteredList<>(userItems, u -> true);
@@ -241,7 +248,7 @@ public class ClientApp extends Application {
         usersView.setPrefWidth(300);
         usersView.setCellFactory(lv -> new UserCell());
 
-        Button btnRefreshUsers = new Button();
+        Button btnRefreshUsers = Icons.on(new Button(), Feather.REFRESH_CW);
         btnRefreshUsers.textProperty().bind(I18n.bind("refresh"));
 
         VBox left = new VBox(10, label("online_header"), tfSearchUsers, usersView, btnRefreshUsers);
@@ -277,8 +284,8 @@ public class ClientApp extends Application {
         TextField tfMessage = new TextField();
         tfMessage.promptTextProperty().bind(I18n.bind("type_message"));
 
-        Button btnSendText = new Button();
-        btnSendText.textProperty().bind(Bindings.concat("✅ ", I18n.bind("send_text")));
+        Button btnSendText = Icons.on(new Button(), Feather.SEND);
+        btnSendText.textProperty().bind(I18n.bind("send_text"));
 
         btnSendText.setOnAction(a -> {
             if (conn == null || activePeer == null) return;
@@ -298,8 +305,8 @@ public class ClientApp extends Application {
             t.start();
         });
 
-        Button btnChoose = new Button();
-        btnChoose.textProperty().bind(Bindings.concat("📎 ", I18n.bind("attach")));
+        Button btnChoose = Icons.on(new Button(), Feather.PAPERCLIP);
+        btnChoose.textProperty().bind(I18n.bind("attach"));
         // The attached files: one or several (Ctrl/Shift-click in the file dialog).
         ObservableList<Path> chosen = attachments;
         Label lblChosen = new Label();
@@ -314,9 +321,9 @@ public class ClientApp extends Application {
                 chosen.stream().map(p -> p.getFileName().toString()).toList()), chosen));
         lblChosen.tooltipProperty().bind(Bindings.when(Bindings.size(chosen).greaterThan(1))
                 .then(chosenNames).otherwise((Tooltip) null));
-        Button btnSend = new Button();
-        btnSend.textProperty().bind(Bindings.createStringBinding(() -> "✉ " + (chosen.size() > 1
-                ? I18n.get("send_files", Integer.toString(chosen.size())) : I18n.get("send_file")),
+        Button btnSend = Icons.on(new Button(), Feather.UPLOAD);
+        btnSend.textProperty().bind(Bindings.createStringBinding(() -> chosen.size() > 1
+                ? I18n.get("send_files", Integer.toString(chosen.size())) : I18n.get("send_file"),
                 chosen, I18n.bundleProperty()));
 
         btnChoose.setOnAction(a -> {
@@ -576,6 +583,9 @@ public class ClientApp extends Application {
         overlay.setAlignment(Pos.CENTER);
         overlay.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
         overlay.setMouseTransparent(true);
+        overlay.setGraphic(Icons.of(Feather.UPLOAD_CLOUD));
+        overlay.setContentDisplay(ContentDisplay.TOP);
+        overlay.setGraphicTextGap(12);
         overlay.setVisible(false);
         target.getChildren().add(overlay);
 
@@ -726,6 +736,7 @@ public class ClientApp extends Application {
         alert.setHeaderText(I18n.get("trust_header", host + ":" + port));
         alert.getDialogPane().setContent(new VBox(10, explain, fingerprintBox(fingerprint)));
         alert.getDialogPane().setPrefWidth(620);
+        Icons.on((Button) alert.getDialogPane().lookupButton(trust), Feather.SHIELD);
 
         if (showLocalized(stage, alert).orElse(cancel) != trust) return false;
         return saveTrust(host, port, fingerprint);
@@ -755,7 +766,7 @@ public class ClientApp extends Application {
                 compared));
         alert.getDialogPane().setPrefWidth(640);
 
-        Button trustButton = (Button) alert.getDialogPane().lookupButton(trustNew);
+        Button trustButton = Icons.on((Button) alert.getDialogPane().lookupButton(trustNew), Feather.SHIELD);
         trustButton.disableProperty().bind(compared.selectedProperty().not());
         trustButton.setDefaultButton(false);
         ((Button) alert.getDialogPane().lookupButton(close)).setDefaultButton(true); // Enter must not trust
@@ -871,6 +882,7 @@ public class ClientApp extends Application {
         list.getSelectionModel().selectFirst();
         dialog.getDialogPane().setContent(list);
         dialog.getDialogPane().getButtonTypes().addAll(use, close);
+        Icons.on((Button) dialog.getDialogPane().lookupButton(use), Feather.CHECK);
         dialog.getDialogPane().setPrefWidth(480);
         dialog.getDialogPane().lookupButton(use).disableProperty()
                 .bind(list.getSelectionModel().selectedItemProperty().isNull());
@@ -1066,10 +1078,10 @@ public class ClientApp extends Application {
 
     /** The ✕ button of a transfer row, shown only while that transfer can still be cancelled. */
     private static final class CancelCell extends TableCell<SimpleTransferRow, SimpleTransferRow> {
-        private final Button button = new Button("✕");
+        private final Button button = Icons.on(new Button(), Feather.X);
 
         CancelCell() {
-            button.getStyleClass().addAll("cancel-transfer", "flat");
+            button.getStyleClass().addAll("cancel-transfer", Styles.BUTTON_ICON, Styles.FLAT, Styles.DANGER);
             Tooltip tip = new Tooltip();
             tip.textProperty().bind(I18n.bind("cancel_transfer"));
             button.setTooltip(tip);

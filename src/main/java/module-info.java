@@ -3,6 +3,10 @@ module com.hamza.filetransfer {
 
     requires atlantafx.base;
 
+    // Button icons (the Feather pack registers itself as an IkonHandler service)
+    requires org.kordamp.ikonli.javafx;
+    requires org.kordamp.ikonli.feather;
+
     // Windows notifications for new messages (AWT TrayIcon, see client.DesktopNotifier)
     requires java.desktop;
 

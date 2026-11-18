@@ -185,13 +185,12 @@
     -fx-text-fill: -color-danger-fg;
 }
 
-/* ✕ next to a running transfer */
-.cancel-transfer {
-    -fx-padding: 2 8;
-    -fx-text-fill: -color-danger-fg;
-    -fx-font-weight: 700;
+/* The big icon in the drop frame follows its text color */
+.drop-overlay > .ikonli-font-icon {
+    -fx-icon-size: 48px;
+    -fx-icon-color: -color-accent-fg;
 }
 
-.cancel-transfer:hover {
-    -fx-background-color: -color-danger-subtle;
+.drop-overlay:blocked > .ikonli-font-icon {
+    -fx-icon-color: -color-danger-fg;
 }

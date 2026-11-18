@@ -2,7 +2,7 @@
 
 **العربية** | [English](README.en.md)
 
-![Version](https://img.shields.io/badge/version-2.4.0-blue) ![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white) ![JavaFX](https://img.shields.io/badge/JavaFX-21-1F6FB2) ![AtlantaFX](https://img.shields.io/badge/AtlantaFX-2.0-6C4AB6) ![Maven](https://img.shields.io/badge/Maven-wrapper-C71A36?logo=apachemaven&logoColor=white) ![Sockets](https://img.shields.io/badge/Sockets-client--server-555555) ![License](https://img.shields.io/badge/License-MIT-green)
+![Version](https://img.shields.io/badge/version-2.4.0-blue) ![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white) ![JavaFX](https://img.shields.io/badge/JavaFX-21-1F6FB2) ![AtlantaFX](https://img.shields.io/badge/AtlantaFX-2.0-6C4AB6) ![Ikonli](https://img.shields.io/badge/Ikonli-12.4-2E7D32) ![Maven](https://img.shields.io/badge/Maven-wrapper-C71A36?logo=apachemaven&logoColor=white) ![Sockets](https://img.shields.io/badge/Sockets-client--server-555555) ![License](https://img.shields.io/badge/License-MIT-green)
 
 برنامج JavaFX لنقل الملفات والمحادثة بين الأجهزة على الشبكة المحلية (LAN)، أشبه بـ "واتساب للملفات": سيرفر واحد وأي عدد من العملاء يتواصلون عبر TCP Sockets مباشرة، بدون إنترنت وبدون قاعدة بيانات.
 
@@ -27,6 +27,7 @@
 - **واجهة بالعربية والإنجليزية** مع التبديل أثناء التشغيل، واتجاه من اليمين لليسار للعربية.
 - **رسائل الخطأ مترجمة**: السيرفر يرسل كود الخطأ فقط، والعميل يعرضه بلغة الواجهة.
 - **ثيمات متعددة** من AtlantaFX (Primer و Nord و Cupertino بالوضعين الفاتح والداكن، و Dracula).
+- **أيقونات للأزرار** من مكتبة Ikonli (مجموعة Feather)، ولونها بيتبع الثيم تلقائيًا في الفاتح والداكن.
 - **واجهة للسيرفر** تعرض جدول عمليات النقل وتقدّم كل منها، بالعربية أو الإنجليزية وبأي ثيم، وبتفتكر اختيارك.
 
 ### الحسابات

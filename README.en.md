@@ -2,7 +2,7 @@
 
 [العربية](README.md) | **English**
 
-![Version](https://img.shields.io/badge/version-2.4.0-blue) ![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white) ![JavaFX](https://img.shields.io/badge/JavaFX-21-1F6FB2) ![AtlantaFX](https://img.shields.io/badge/AtlantaFX-2.0-6C4AB6) ![Maven](https://img.shields.io/badge/Maven-wrapper-C71A36?logo=apachemaven&logoColor=white) ![Sockets](https://img.shields.io/badge/Sockets-client--server-555555) ![License](https://img.shields.io/badge/License-MIT-green)
+![Version](https://img.shields.io/badge/version-2.4.0-blue) ![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white) ![JavaFX](https://img.shields.io/badge/JavaFX-21-1F6FB2) ![AtlantaFX](https://img.shields.io/badge/AtlantaFX-2.0-6C4AB6) ![Ikonli](https://img.shields.io/badge/Ikonli-12.4-2E7D32) ![Maven](https://img.shields.io/badge/Maven-wrapper-C71A36?logo=apachemaven&logoColor=white) ![Sockets](https://img.shields.io/badge/Sockets-client--server-555555) ![License](https://img.shields.io/badge/License-MIT-green)
 
 A JavaFX app for sending files and chatting between computers on a local network (LAN), like "WhatsApp for files". One server and any number of clients talk directly over TCP sockets. No internet connection and no database are needed.
 
@@ -27,6 +27,7 @@ A JavaFX app for sending files and chatting between computers on a local network
 - **Arabic and English UI**, switchable while the app is running, with right-to-left layout for Arabic.
 - **Translated error messages**: the server sends only an error code, and the client shows it in the UI language.
 - **Several themes** from AtlantaFX: Primer, Nord and Cupertino (light and dark), and Dracula.
+- **Button icons** from Ikonli (the Feather pack). They take the theme's colors on their own, light or dark.
 - **Server window** with a table of transfers and the progress of each one, in Arabic or English and any of the themes, remembered for next time.
 
 ### Accounts
