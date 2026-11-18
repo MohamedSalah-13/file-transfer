@@ -22,7 +22,11 @@ import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
+import javafx.scene.control.skin.VirtualFlow;
 import javafx.scene.input.DragEvent;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyCodeCombination;
+import javafx.scene.input.KeyCombination;
 import javafx.scene.input.Dragboard;
 import javafx.scene.input.TransferMode;
 import javafx.scene.layout.*;
@@ -70,6 +74,13 @@ public class ClientApp extends Application {
     private Path lastAttachFolder; // the file dialog opens where the last attachment came from
     final ObservableList<Path> attachments = FXCollections.observableArrayList(); // picked with "Attach Files"; tests fill it directly
     private Path lastDownloadFolder; // the folder dialog opens where the last download went
+    // Search in the open chat
+    CustomTextField chatSearch;
+    private final Label searchCount = new Label();
+    private final BooleanProperty searchHasMatches = new SimpleBooleanProperty(false);
+    /** Ids of the matching messages, oldest first; {@link #currentMatch} indexes into it (-1: none). */
+    private List<String> searchMatches = List.of();
+    private int currentMatch = -1;
     private LocalFiles localFiles;   // where chat files are on this computer (downloaded or sent)
     /** Opening and showing files; tests replace them so nothing really opens. */
     FileAction openFile = FileLauncher::open;
@@ -174,6 +185,7 @@ public class ClientApp extends Application {
             applyOrientation(stage.getScene().getRoot());
             settings.applyOrientation();
             if (chatListRef != null) chatListRef.refresh(); // bubbles read translations when rendered
+            updateSearchCount();
             rememberAppearance(langPicker, themePicker);
         });
         themePicker.setOnAction(e -> {
@@ -285,8 +297,44 @@ public class ClientApp extends Application {
             }
         });
 
-        HBox chatHeader = new HBox(10, chatTitle, new Region());
-        HBox.setHgrow(chatHeader.getChildren().get(1), Priority.ALWAYS);
+        // Search in the open chat: Ctrl+F, Enter for older matches, Shift+Enter for newer, Esc to clear.
+        chatSearch = new CustomTextField();
+        chatSearch.setLeft(Icons.of(Feather.SEARCH));
+        chatSearch.promptTextProperty().bind(I18n.bind("search_chat_prompt"));
+        chatSearch.setPrefColumnCount(14);
+        Button searchOlder = Icons.on(new Button(), Feather.CHEVRON_UP);
+        Button searchNewer = Icons.on(new Button(), Feather.CHEVRON_DOWN);
+        for (Button b : List.of(searchOlder, searchNewer)) {
+            b.getStyleClass().addAll(Styles.BUTTON_ICON, Styles.FLAT);
+            b.setFocusTraversable(false);
+            b.disableProperty().bind(searchHasMatches.not());
+        }
+        searchOlder.setTooltip(tooltip("search_older"));
+        searchNewer.setTooltip(tooltip("search_newer"));
+        searchOlder.accessibleTextProperty().bind(I18n.bind("search_older"));
+        searchNewer.accessibleTextProperty().bind(I18n.bind("search_newer"));
+        searchCount.getStyleClass().add("search-count");
+        searchCount.setMinWidth(Region.USE_PREF_SIZE);
+        chatSearch.textProperty().addListener((obs, old, q) -> runChatSearch(false));
+        chatSearch.setOnKeyPressed(e -> {
+            switch (e.getCode()) {
+                case ENTER -> stepChatSearch(e.isShiftDown() ? 1 : -1);
+                case ESCAPE -> chatSearch.clear();
+                default -> { return; }
+            }
+            e.consume();
+        });
+        searchOlder.setOnAction(e -> stepChatSearch(-1));
+        searchNewer.setOnAction(e -> stepChatSearch(1));
+        // A reloaded or switched chat: search it again, staying on the same message when it is still there.
+        chatMessages.addListener((ListChangeListener<ChatMessage>) ch -> runChatSearch(true));
+        HBox searchBox = new HBox(4, chatSearch, searchCount, searchOlder, searchNewer);
+        searchBox.setAlignment(Pos.CENTER_RIGHT);
+
+        Region headerSpacer = new Region();
+        HBox.setHgrow(headerSpacer, Priority.ALWAYS);
+        HBox chatHeader = new HBox(10, chatTitle, headerSpacer, searchBox);
+        chatHeader.setAlignment(Pos.CENTER_LEFT);
 
         VBox center = new VBox(10, chatHeader, chatSub, chatList);
         center.getStyleClass().add("chat-surface");
@@ -477,6 +525,10 @@ public class ClientApp extends Application {
 
         Scene scene = new Scene(root, 1280, 720);
         scene.getStylesheets().add(getClass().getResource("/styles/app.css").toExternalForm());
+        scene.getAccelerators().put(new KeyCodeCombination(KeyCode.F, KeyCombination.SHORTCUT_DOWN), () -> {
+            chatSearch.requestFocus();
+            chatSearch.selectAll();
+        });
         applyOrientation(root);
 
         // After midnight, "09:30" must become "Yesterday, 09:30". The sidebar binds to the date;
@@ -648,6 +700,74 @@ public class ClientApp extends Application {
         if (dir == null) return;
         lastDownloadFolder = dir.toPath();
         downloadInto(dir.toPath(), messageId, displayName);
+    }
+
+    /**
+     * Finds the messages of the open chat whose text or file name contains the search (see
+     * {@link SearchText}). A new search starts at the newest match; {@code keepCurrent} (the chat
+     * reloaded) stays on the same message if it still matches.
+     */
+    private void runChatSearch(boolean keepCurrent) {
+        if (chatSearch == null) return;
+        String query = SearchText.normalize(chatSearch.getText());
+        String stayOn = keepCurrent && currentMatch >= 0 ? searchMatches.get(currentMatch) : null;
+        searchMatches = query.isEmpty() ? List.of() : chatMessages.stream()
+                .filter(m -> SearchText.contains(m.typeProperty().get() == ChatMessage.Type.TEXT
+                        ? m.textProperty().get() : m.fileNameProperty().get(), query))
+                .map(m -> m.messageIdProperty().get())
+                .toList();
+        currentMatch = searchMatches.isEmpty() ? -1
+                : stayOn != null && searchMatches.contains(stayOn) ? searchMatches.indexOf(stayOn)
+                : searchMatches.size() - 1;
+        showCurrentMatch(!keepCurrent);
+    }
+
+    /** -1: the older match, +1: the newer one; wraps around at either end. */
+    private void stepChatSearch(int direction) {
+        if (searchMatches.isEmpty()) return;
+        currentMatch = Math.floorMod(currentMatch + direction, searchMatches.size());
+        showCurrentMatch(true);
+    }
+
+    private void showCurrentMatch(boolean scroll) {
+        searchHasMatches.set(!searchMatches.isEmpty());
+        updateSearchCount();
+        if (chatListRef == null) return;
+        chatListRef.refresh(); // re-style the bubbles
+        if (scroll && currentMatch >= 0) {
+            String id = searchMatches.get(currentMatch);
+            for (int i = 0; i < chatMessages.size(); i++) {
+                if (chatMessages.get(i).messageIdProperty().get().equals(id)) {
+                    int index = i;
+                    chatListRef.scrollTo(Math.max(0, index - 1)); // one message of context above it
+                    // Bubbles have different heights, so that first jump is an estimate and can stop
+                    // a bubble short near the end of the chat. After the layout, make sure it shows.
+                    Platform.runLater(() -> {
+                        if (chatListRef.lookup(".virtual-flow") instanceof VirtualFlow<?> flow) flow.scrollTo(index);
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
+    private void updateSearchCount() {
+        boolean searching = chatSearch != null && !SearchText.normalize(chatSearch.getText()).isEmpty();
+        searchCount.setText(!searching ? "" : searchMatches.isEmpty() ? I18n.get("search_none")
+                : I18n.get("search_count", Integer.toString(currentMatch + 1), Integer.toString(searchMatches.size())));
+        searchCount.pseudoClassStateChanged(DROP_BLOCKED, searching && searchMatches.isEmpty());
+    }
+
+    /** "match" for every matching message, "current" for the one the arrows are on. */
+    private String searchState(ChatMessage m) {
+        int i = searchMatches.indexOf(m.messageIdProperty().get());
+        return i < 0 ? null : i == currentMatch ? "current" : "match";
+    }
+
+    private static Tooltip tooltip(String key) {
+        Tooltip t = new Tooltip();
+        t.textProperty().bind(I18n.bind(key));
+        return t;
     }
 
     /**
@@ -1371,6 +1491,8 @@ public class ClientApp extends Application {
             StackPane bubble = new StackPane(box);
             bubble.getStyleClass().add("bubble");
             bubble.getStyleClass().add(out ? "bubble-out" : "bubble-in");
+            String found = searchState(item);
+            if (found != null) bubble.getStyleClass().add(found.equals("current") ? "bubble-search-current" : "bubble-search-match");
             // Full date on hover; the bubble itself shows the short form.
             Tooltip.install(bubble, new Tooltip(I18n.messageTimeFull(item.timestampProperty().get())));
 

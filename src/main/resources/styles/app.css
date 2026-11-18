@@ -199,3 +199,24 @@
 .drop-overlay:blocked > .ikonli-font-icon {
     -fx-icon-color: -color-danger-fg;
 }
+
+/* Chat search: matching bubbles get a yellow frame, the one the arrows are on a thicker one */
+.bubble.bubble-search-match {
+    -fx-border-color: -color-warning-emphasis;
+    -fx-border-width: 2;
+}
+
+.bubble.bubble-search-current {
+    -fx-border-color: -color-warning-emphasis;
+    -fx-border-width: 3;
+    -fx-effect: dropshadow(gaussian, -color-warning-emphasis, 10, 0.3, 0, 0);
+}
+
+.search-count {
+    -fx-text-fill: -color-fg-muted;
+    -fx-font-size: 12px;
+}
+
+.search-count:blocked {
+    -fx-text-fill: -color-danger-fg;
+}

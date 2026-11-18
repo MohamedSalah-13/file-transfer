@@ -6,10 +6,25 @@
 
 A JavaFX app for sending files and chatting between computers on a local network (LAN), like "WhatsApp for files". One server and any number of clients talk directly over TCP sockets. No internet connection and no database are needed.
 
+## Screenshots
+
+![Client window: online users, the chat with Sara and the transfers panel](docs/images/client-en.png)
+
+*The client: online users with unread counts, a chat with a downloaded file, and the transfers panel.*
+
+| Settings: connecting to the server | First connection: compare the server fingerprint before trusting it |
+|---|---|
+| ![Settings window](docs/images/settings-en.png) | ![New server dialog](docs/images/trust-en.png) |
+
+![Server window](docs/images/server-en.png)
+
+*The server: port, storage folder, certificate fingerprint and the table of transferred files.*
+
 ## Features
 
 ### Chat and files
 - **Text chat and file sending** between users. The server keeps the history of every conversation. "Attach Files" picks one or several files at once (Ctrl- or Shift-click), and each is sent as its own transfer.
+- **Search in a chat**: a search box above the open chat (Ctrl+F) looks through messages and file names and highlights what it finds; Enter goes to the older match, Shift+Enter to the newer one. It ignores case, accents and Arabic diacritics, and matches the Arabic letters people type interchangeably (أ/ا, ة/ه, ى/ي).
 - **Buttons on file bubbles**: "Download" for a file you don't have yet, "Open" and "Show in folder" for one on your computer (downloaded, or sent from here), remembered across restarts. A file that can run programs (an `.exe`, a `.bat`...) asks first, with Cancel as the default.
 - **Drag and drop**: drag one or more files from Explorer onto the open chat to send them right away. While dragging, a frame says what will be sent and to whom, or why it can't be (not connected, no user selected). Folders are skipped.
 - **Instant notifications**: the server pushes new messages and files to the recipient as soon as they arrive.
