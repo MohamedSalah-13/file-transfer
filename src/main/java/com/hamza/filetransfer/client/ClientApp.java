@@ -8,10 +8,8 @@ import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.IntegerProperty;
 import javafx.beans.property.SimpleIntegerProperty;
 import javafx.collections.ListChangeListener;
-import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.geometry.Orientation;
-import javafx.beans.property.SimpleObjectProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
@@ -66,6 +64,8 @@ public class ClientApp extends Application {
     private String activePeer;
     private ListView<ChatMessage> chatListRef;
     private ListView<UserItem> usersViewRef;
+    private Path lastAttachFolder; // the file dialog opens where the last attachment came from
+    final ObservableList<Path> attachments = FXCollections.observableArrayList(); // picked with "Attach Files"; tests fill it directly
     private Stage mainStage;
 
     /** Shows a desktop notification; {@link DesktopNotifier} in the app, a recorder in tests. */
@@ -300,26 +300,41 @@ public class ClientApp extends Application {
 
         Button btnChoose = new Button();
         btnChoose.textProperty().bind(Bindings.concat("📎 ", I18n.bind("attach")));
-        ObjectProperty<Path> chosen = new SimpleObjectProperty<>();
+        // The attached files: one or several (Ctrl/Shift-click in the file dialog).
+        ObservableList<Path> chosen = attachments;
         Label lblChosen = new Label();
-        lblChosen.textProperty().bind(Bindings.createStringBinding(
-                () -> chosen.get() == null ? I18n.get("no_file") : chosen.get().getFileName().toString(),
-                chosen, I18n.bundleProperty()));
+        lblChosen.textProperty().bind(Bindings.createStringBinding(() -> switch (chosen.size()) {
+            case 0 -> I18n.get("no_file");
+            case 1 -> chosen.getFirst().getFileName().toString();
+            default -> I18n.get("files_chosen", Integer.toString(chosen.size()));
+        }, chosen, I18n.bundleProperty()));
+        // Several files: hovering the label lists them.
+        Tooltip chosenNames = new Tooltip();
+        chosenNames.textProperty().bind(Bindings.createStringBinding(() -> String.join(System.lineSeparator(),
+                chosen.stream().map(p -> p.getFileName().toString()).toList()), chosen));
+        lblChosen.tooltipProperty().bind(Bindings.when(Bindings.size(chosen).greaterThan(1))
+                .then(chosenNames).otherwise((Tooltip) null));
         Button btnSend = new Button();
-        btnSend.textProperty().bind(Bindings.concat("✉ ", I18n.bind("send_file")));
+        btnSend.textProperty().bind(Bindings.createStringBinding(() -> "✉ " + (chosen.size() > 1
+                ? I18n.get("send_files", Integer.toString(chosen.size())) : I18n.get("send_file")),
+                chosen, I18n.bundleProperty()));
 
         btnChoose.setOnAction(a -> {
             FileChooser fc = new FileChooser();
             fc.setTitle(I18n.get("choose_file"));
-            var file = fc.showOpenDialog(stage);
-            if (file != null) {
-                chosen.set(file.toPath());
+            if (lastAttachFolder != null && Files.isDirectory(lastAttachFolder)) fc.setInitialDirectory(lastAttachFolder.toFile());
+            List<File> files = fc.showOpenMultipleDialog(stage);
+            if (files != null && !files.isEmpty()) { // cancelled: keep what was attached
+                chosen.setAll(files.stream().map(File::toPath).toList());
+                lastAttachFolder = chosen.getFirst().getParent();
             }
         });
 
         btnSend.setOnAction(a -> {
-            if (conn == null || activePeer == null || chosen.get() == null) return;
-            sendFile(activePeer, chosen.get());
+            if (conn == null || activePeer == null || chosen.isEmpty()) return;
+            String peer = activePeer;
+            chosen.forEach(f -> sendFile(peer, f)); // each file is its own transfer and row
+            chosen.clear(); // sent: the next Send needs a new attachment, so nothing goes twice by mistake
         });
 
         FlowPane composer = new FlowPane(tfMessage, btnSendText, btnChoose, lblChosen, btnSend);

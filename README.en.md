@@ -9,7 +9,7 @@ A JavaFX app for sending files and chatting between computers on a local network
 ## Features
 
 ### Chat and files
-- **Text chat and file sending** between users. The server keeps the history of every conversation.
+- **Text chat and file sending** between users. The server keeps the history of every conversation. "Attach Files" picks one or several files at once (Ctrl- or Shift-click), and each is sent as its own transfer.
 - **Drag and drop**: drag one or more files from Explorer onto the open chat to send them right away. While dragging, a frame says what will be sent and to whom, or why it can't be (not connected, no user selected). Folders are skipped.
 - **Instant notifications**: the server pushes new messages and files to the recipient as soon as they arrive.
 - **Windows notifications**: when the app isn't in front and a message or file arrives, Windows shows a notification with the sender's name (never the message text); clicking it opens that chat. The unread count shows in the window title and taskbar, like "(3)". Notifications can be turned off in Settings.
