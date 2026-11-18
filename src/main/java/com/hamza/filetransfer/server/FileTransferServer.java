@@ -242,6 +242,14 @@ public class FileTransferServer {
                     }
                     handleListThread(username, in, out, lock);
 
+                } else if (Protocol.DELETE_MESSAGE.equals(c)) {
+                    if (!isControl) {
+                        in.readUTF(); in.readUTF(); in.readUTF(); // keep the stream in sync
+                        sendError(out, lock, ErrorCode.CONTROL_ONLY, Protocol.DELETE_MESSAGE);
+                        continue;
+                    }
+                    handleDeleteMessage(username, in, out, lock);
+
                 } else if (Protocol.DOWNLOAD.equals(c)) {
                     handleDownload(username, in, out, lock);
 
@@ -503,12 +511,14 @@ public class FileTransferServer {
 
                 out.writeUTF(pr.getProperty("messageId"));
                 out.writeUTF(pr.getProperty("direction"));     // IN / OUT
-                out.writeUTF(messageType);                     // TEXT / FILE
+                out.writeUTF(messageType);                     // TEXT / FILE / DELETED
                 out.writeUTF(pr.getProperty("fromUser"));
                 out.writeUTF(pr.getProperty("toUser"));
                 out.writeUTF(pr.getProperty("timestamp"));
 
-                if ("TEXT".equals(messageType)) {
+                if (DELETED.equals(messageType)) {
+                    // a placeholder: nothing else is kept
+                } else if ("TEXT".equals(messageType)) {
                     out.writeUTF(pr.getProperty("text", ""));
                 } else {
                     out.writeUTF(pr.getProperty("fileName"));
@@ -517,6 +527,130 @@ public class FileTransferServer {
                 }
             }
             out.flush();
+        }
+    }
+
+    /** messageType of a message deleted for everyone: the thread keeps who, when and a placeholder. */
+    private static final String DELETED = "DELETED";
+    /** One delete at a time: the two copies of a message must not be changed by two deletes at once. */
+    private final Object deleteLock = new Object();
+
+    /**
+     * DELETE_MESSAGE &lt;peer&gt; &lt;messageId&gt; &lt;scope&gt; (see {@link Protocol#DELETE_MESSAGE}).
+     * For me: removes the caller's copy, and for a received file its bytes in the caller's inbox.
+     * For everyone: only on a message the caller sent; both copies become DELETED placeholders,
+     * the file's bytes leave the recipient's inbox, and the recipient gets MESSAGE_DELETED.
+     */
+    private void handleDeleteMessage(String username, DataInputStream in, DataOutputStream out, Object lock) throws Exception {
+        String rawPeer = in.readUTF();
+        String messageId = in.readUTF();
+        String scope = in.readUTF();
+
+        String peer = knownPeer(rawPeer);
+        if (peer == null) {
+            sendError(out, lock, ErrorCode.UNKNOWN_USER);
+            return;
+        }
+        if (!Protocol.DELETE_FOR_ME.equals(scope) && !Protocol.DELETE_FOR_EVERYONE.equals(scope)) {
+            sendError(out, lock, ErrorCode.BAD_DELETE_SCOPE, scope);
+            return;
+        }
+        if (!SafeNames.isValidMessageId(messageId)) { // it becomes a file name below
+            sendError(out, lock, ErrorCode.MESSAGE_NOT_FOUND);
+            return;
+        }
+
+        boolean notifyPeer = false;
+        synchronized (deleteLock) {
+            Path mine = SafeNames.resolveInside(userThreadDir(username, peer), messageId + ".meta");
+            if (!Files.isRegularFile(mine)) {
+                sendError(out, lock, ErrorCode.MESSAGE_NOT_FOUND);
+                return;
+            }
+            Properties meta = readMeta(mine);
+            String type = meta.getProperty("messageType", "FILE");
+            boolean sentByMe = "OUT".equals(meta.getProperty("direction"));
+
+            if (Protocol.DELETE_FOR_ME.equals(scope)) {
+                Files.deleteIfExists(mine);
+                if (!sentByMe && "FILE".equals(type)) deleteInboxCopy(username, messageId);
+            } else {
+                if (!sentByMe) {
+                    sendError(out, lock, ErrorCode.NOT_YOUR_MESSAGE);
+                    return;
+                }
+                // The recipient's side first and my copy LAST: if a step fails (or the server stops),
+                // my copy is still the original message, so I can just delete for everyone again.
+                // Every step skips what is already done, so a retry finishes the job.
+                String originalType = DELETED.equals(type) ? meta.getProperty("deletedType", "TEXT") : type;
+                try {
+                    Path theirs = SafeNames.resolveInside(userThreadDir(peer, username), messageId + ".meta");
+                    if (Files.isRegularFile(theirs)) {
+                        Properties theirMeta = readMeta(theirs);
+                        if (!DELETED.equals(theirMeta.getProperty("messageType"))) {
+                            replaceWithPlaceholder(theirs, theirMeta, originalType);
+                        }
+                    }
+                    if ("FILE".equals(originalType)) deleteInboxCopy(peer, messageId);
+                    if (!DELETED.equals(type)) {
+                        replaceWithPlaceholder(mine, meta, originalType);
+                        notifyPeer = true;
+                    }
+                } catch (IOException e) {
+                    System.err.println("Deleting " + messageId + " for everyone stopped part way: " + e.getMessage());
+                    sendError(out, lock, ErrorCode.DELETE_INCOMPLETE);
+                    return;
+                }
+            }
+        }
+
+        synchronized (lock) {
+            out.writeUTF(Protocol.DELETE_OK);
+            out.writeUTF(messageId);
+            out.flush();
+        }
+        if (notifyPeer) {
+            push(peer, o -> {
+                o.writeUTF(Protocol.MESSAGE_DELETED);
+                o.writeUTF(messageId);
+                o.writeUTF(username);
+            });
+        }
+    }
+
+    /** Keeps only who, when and the id; the text or file name is gone from the server. */
+    private void replaceWithPlaceholder(Path metaFile, Properties meta, String originalType) throws IOException {
+        Properties p = new Properties();
+        for (String key : List.of("messageId", "direction", "fromUser", "toUser", "timestamp", "timestampMillis")) {
+            String v = meta.getProperty(key);
+            if (v != null) p.setProperty(key, v);
+        }
+        p.setProperty("messageType", DELETED);
+        p.setProperty("deletedType", originalType); // TEXT or FILE, so a retry knows to clean up a file
+        p.setProperty("deletedAt", Instant.now().toString());
+        // Encrypted like every .meta, bound to the FINAL path (readMeta checks it), then moved over the
+        // old one atomically: a crash leaves either the old message or the placeholder, never half of one.
+        StringWriter text = new StringWriter();
+        p.store(text, null);
+        byte[] sealed = crypto.encrypt(text.toString().getBytes(StandardCharsets.UTF_8), context(metaFile));
+        Path tmp = Files.createTempFile(metaFile.getParent(), "deleted", ".tmp");
+        try {
+            Files.write(tmp, sealed);
+            Files.move(tmp, metaFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } finally {
+            Files.deleteIfExists(tmp);
+        }
+    }
+
+    /** The meta first: once it is gone, DOWNLOAD reports file_not_found even if the bytes linger. */
+    private void deleteInboxCopy(String owner, String messageId) throws IOException {
+        Path inbox = userInboxDir(owner);
+        Files.deleteIfExists(SafeNames.resolveInside(inbox, messageId + ".meta"));
+        try {
+            Files.deleteIfExists(SafeNames.resolveInside(inbox, messageId + ".bin"));
+        } catch (IOException e) {
+            // e.g. still open by a download in progress on Windows; the meta is gone, so nobody can fetch it
+            System.err.println("Could not delete " + messageId + ".bin yet: " + e.getMessage());
         }
     }
 

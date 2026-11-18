@@ -328,6 +328,55 @@ class ClientConnectionTest {
     }
 
     @Test
+    void deletingSendsTheRequestAndDeletedMessagesAndPushesArrive() throws Exception {
+        conn = login("carol", "carol");
+        Peer control = server.lastControl;
+        BlockingQueue<String> events = new LinkedBlockingQueue<>();
+        conn.setOnThreadMessages((peer, msgs) -> msgs.forEach(m -> events.add(peer + ":" + m.typeProperty().get() + ":" + m.outgoingProperty().get())));
+        conn.setOnMessageDeleted((peer, id) -> events.add("deleted " + id + " by " + peer));
+        conn.start();
+
+        conn.deleteMessage("dave", "11111111-1111-1111-1111-111111111111", true);
+        assertEquals(Protocol.DELETE_MESSAGE, control.in.readUTF());
+        assertEquals("dave", control.in.readUTF());
+        assertEquals("11111111-1111-1111-1111-111111111111", control.in.readUTF());
+        assertEquals(Protocol.DELETE_FOR_EVERYONE, control.in.readUTF());
+        conn.deleteMessage("dave", "22222222-2222-2222-2222-222222222222", false);
+        control.in.readUTF();
+        control.in.readUTF();
+        control.in.readUTF();
+        assertEquals(Protocol.DELETE_FOR_ME, control.in.readUTF());
+
+        // DELETE_OK is read and ignored; a DELETED entry carries no text or file fields
+        control.out.writeUTF(Protocol.DELETE_OK);
+        control.out.writeUTF("11111111-1111-1111-1111-111111111111");
+        control.out.writeUTF(Protocol.THREAD_MESSAGES);
+        control.out.writeUTF("dave");
+        control.out.writeInt(2);
+        control.out.writeUTF("11111111-1111-1111-1111-111111111111");
+        control.out.writeUTF("OUT");
+        control.out.writeUTF("DELETED");
+        control.out.writeUTF("carol");
+        control.out.writeUTF("dave");
+        control.out.writeUTF("2026-11-18T08:00:00Z");
+        control.out.writeUTF("33333333-3333-3333-3333-333333333333"); // the next entry still lines up
+        control.out.writeUTF("IN");
+        control.out.writeUTF("TEXT");
+        control.out.writeUTF("dave");
+        control.out.writeUTF("carol");
+        control.out.writeUTF("2026-11-18T08:01:00Z");
+        control.out.writeUTF("still here");
+        control.out.writeUTF(Protocol.MESSAGE_DELETED);
+        control.out.writeUTF("44444444-4444-4444-4444-444444444444");
+        control.out.writeUTF("dave");
+        control.out.flush();
+
+        assertEquals("dave:DELETED:true", events.poll(5, TimeUnit.SECONDS));
+        assertEquals("dave:TEXT:false", events.poll(5, TimeUnit.SECONDS));
+        assertEquals("deleted 44444444-4444-4444-4444-444444444444 by dave", events.poll(5, TimeUnit.SECONDS));
+    }
+
+    @Test
     void aFailedDownloadLeavesNoPartialFile() throws Exception {
         conn = login("carol", "carol");
         Path downloads = Files.createDirectory(dir.resolve("downloads"));

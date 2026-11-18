@@ -35,6 +35,14 @@ public final class ErrorCode {
     /** args: max characters */
     public static final String TEXT_TOO_LONG = "text_too_long";
     public static final String FILE_NOT_FOUND = "file_not_found";
+    /** DELETE_MESSAGE: no such message in this chat (already deleted, or a bad id). */
+    public static final String MESSAGE_NOT_FOUND = "message_not_found";
+    /** DELETE_MESSAGE for everyone on a message someone else sent. */
+    public static final String NOT_YOUR_MESSAGE = "not_your_message";
+    /** args: the scope that was sent */
+    public static final String BAD_DELETE_SCOPE = "bad_delete_scope";
+    /** DELETE_MESSAGE for everyone stopped part way; the sender's copy is untouched, so it can be retried. */
+    public static final String DELETE_INCOMPLETE = "delete_incomplete";
 
     private ErrorCode() {}
 }

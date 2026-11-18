@@ -11,8 +11,9 @@ public final class Protocol {
      * Wire protocol version. Bump it on ANY change to what client and server send each other
      * (a new field, a new command, a changed order); both sides must have the same value.
      * 0 means a client or server from before versioning (2.0.0 pre-release and older).
+     * 1: 2.x. 2: 3.0 (deleting messages: DELETE_MESSAGE, DELETE_OK, MESSAGE_DELETED, DELETED in threads).
      */
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
 
     // ===== Handshake =====
     // CONTROL login:  HELLO <username> <password>
@@ -43,8 +44,22 @@ public final class Protocol {
 
     public static final String LIST_THREAD = "LIST_THREAD";
 
+    // DELETE_MESSAGE <peer> <messageId> <scope> -> DELETE_OK <messageId> | ERROR <error>   (CONTROL)
+    //   scope ME: removes only the caller's copy (any message, also a "deleted" placeholder).
+    //   scope EVERYONE: only the sender, on a message they sent; both copies become DELETED
+    //   placeholders, a file's bytes are removed, and the peer gets MESSAGE_DELETED.
+    public static final String DELETE_MESSAGE = "DELETE_MESSAGE";
+    public static final String DELETE_FOR_ME = "ME";
+    public static final String DELETE_FOR_EVERYONE = "EVERYONE";
+
     // ===== Server -> Client =====
+    // THREAD_MESSAGES <peer> <count:int>, then per message:
+    //   <messageId> <direction IN|OUT> <type TEXT|FILE|DELETED> <fromUser> <toUser> <timestamp>
+    //   TEXT: <text>   FILE: <fileName> <size:long> <downloadable:boolean>   DELETED: nothing more
     public static final String THREAD_MESSAGES = "THREAD_MESSAGES";
+    public static final String DELETE_OK = "DELETE_OK";
+    // MESSAGE_DELETED <messageId> <fromUser>: pushed to the peer when the sender deleted it for everyone
+    public static final String MESSAGE_DELETED = "MESSAGE_DELETED";
     public static final String USERS = "USERS";
     public static final String SEND_OK = "SEND_OK";
     public static final String MY_FILES = "MY_FILES";

@@ -6,7 +6,8 @@ import java.nio.file.Path;
 
 public class ChatMessage {
 
-    public enum Type { TEXT, FILE }
+    /** DELETED: deleted for everyone by its sender; only who and when are left. */
+    public enum Type { TEXT, FILE, DELETED }
 
     private final StringProperty messageId = new SimpleStringProperty();
     private final ObjectProperty<Type> type = new SimpleObjectProperty<>(Type.FILE);
@@ -54,6 +55,17 @@ public class ChatMessage {
         m.fileName.set(fileName);
         m.fileSize.set(fileSize);
         m.downloadable.set(downloadable);
+        return m;
+    }
+
+    public static ChatMessage deleted(String messageId, boolean outgoing, String fromUser, String toUser, String timestamp) {
+        ChatMessage m = new ChatMessage();
+        m.messageId.set(messageId);
+        m.type.set(Type.DELETED);
+        m.outgoing.set(outgoing);
+        m.fromUser.set(fromUser);
+        m.toUser.set(toUser);
+        m.timestamp.set(timestamp);
         return m;
     }
 

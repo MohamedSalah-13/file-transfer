@@ -78,6 +78,9 @@ public class ClientConnection implements Closeable {
 
     private Consumer<IncomingTextEvent> onIncomingText = evt -> {
     };
+    /** (peer, messageId): the peer deleted a message they sent us, for everyone. */
+    private BiConsumer<String, String> onMessageDeleted = (peer, id) -> {
+    };
 
     /**
      * Opens the TLS CONTROL connection and logs in. A new username is registered with this password
@@ -189,6 +192,24 @@ public class ClientConnection implements Closeable {
         this.onIncomingText = onIncomingText;
     }
 
+    public void setOnMessageDeleted(BiConsumer<String, String> onMessageDeleted) {
+        this.onMessageDeleted = onMessageDeleted;
+    }
+
+    /**
+     * Deletes a message of the chat with {@code peer}: for me (my copy only), or for everyone
+     * (only a message I sent). Queued like the other requests; errors come back through the error
+     * callback. Ask for the thread afterwards to see the result.
+     */
+    public void deleteMessage(String peer, String messageId, boolean forEveryone) {
+        sendRequest(o -> {
+            o.writeUTF(Protocol.DELETE_MESSAGE);
+            o.writeUTF(peer);
+            o.writeUTF(messageId);
+            o.writeUTF(forEveryone ? Protocol.DELETE_FOR_EVERYONE : Protocol.DELETE_FOR_ME);
+        });
+    }
+
     public void setOnThreadMessages(BiConsumer<String, List<ChatMessage>> onThreadMessages) {
         this.onThreadMessages = onThreadMessages;
     }
@@ -236,7 +257,9 @@ public class ClientConnection implements Closeable {
 
                         boolean outgoing = "OUT".equals(direction);
 
-                        if ("TEXT".equals(messageType)) {
+                        if ("DELETED".equals(messageType)) {
+                            msgs.add(ChatMessage.deleted(messageId, outgoing, fromUser, toUser, ts));
+                        } else if ("TEXT".equals(messageType)) {
                             String textBody = in.readUTF();
                             msgs.add(ChatMessage.text(messageId, outgoing, fromUser, toUser, ts, textBody));
                         } else {
@@ -267,6 +290,14 @@ public class ClientConnection implements Closeable {
 
                 } else if (Protocol.SEND_OK.equals(type)) {
                     String messageId = in.readUTF();
+
+                } else if (Protocol.DELETE_OK.equals(type)) {
+                    in.readUTF(); // message id; the UI asked for the thread right after, which shows the result
+
+                } else if (Protocol.MESSAGE_DELETED.equals(type)) {
+                    String messageId = in.readUTF();
+                    String fromUser = in.readUTF();
+                    Platform.runLater(() -> onMessageDeleted.accept(fromUser, messageId));
 
                 } else {
                     Platform.runLater(() -> onError.accept(new AppError(AppError.PROTOCOL_ERROR, type)));
