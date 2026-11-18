@@ -335,6 +335,24 @@ public class ClientConnection implements Closeable {
     }
 
     public void sendFile(String toUser, Path file, BiConsumer<Long, Long> onProgress) throws Exception {
+        sendFile(toUser, file, onProgress, new TransferHandle());
+    }
+
+    /**
+     * Uploads {@code file}; {@code handle.cancel()} stops it and makes this throw
+     * {@link TransferHandle.TransferCancelledException}.
+     */
+    public void sendFile(String toUser, Path file, BiConsumer<Long, Long> onProgress, TransferHandle handle) throws Exception {
+        try {
+            upload(toUser, file, onProgress, handle);
+        } catch (Exception e) {
+            handle.throwIfCancelled(); // the socket closed under us because the user cancelled
+            throw e;
+        }
+    }
+
+    private void upload(String toUser, Path file, BiConsumer<Long, Long> onProgress, TransferHandle handle) throws Exception {
+        handle.throwIfCancelled();
         long size = Files.size(file);
         if (size > Limits.MAX_FILE_BYTES) {
             throw new AppException(ErrorCode.FILE_TOO_LARGE, String.valueOf(Limits.MAX_FILE_BYTES / (1024 * 1024)));
@@ -347,6 +365,7 @@ public class ClientConnection implements Closeable {
         // Open the file first, so a missing file fails before anything is sent.
         try (InputStream fileIn = Files.newInputStream(file);
              TransferSocket t = openTransfer()) {
+            handle.attach(t::abort); // from now on, cancel() closes this socket (without blocking)
             t.out.writeUTF(Protocol.SEND_FILE);
             t.out.writeUTF(toUser);
             t.out.writeUTF(fileName);
@@ -357,6 +376,7 @@ public class ClientConnection implements Closeable {
             byte[] buffer = new byte[Limits.BUFFER_SIZE];
             long sent = 0;
             while (sent < size) {
+                handle.throwIfCancelled();
                 int read = fileIn.read(buffer, 0, (int) Math.min(buffer.length, size - sent));
                 if (read == -1) throw new AppException(AppError.FILE_CHANGED);
                 t.out.write(buffer, 0, read);
@@ -378,11 +398,13 @@ public class ClientConnection implements Closeable {
     /** An extra socket authenticated with this session's token, used for one upload or download. */
     private static final class TransferSocket implements Closeable {
         final Socket socket;
+        final Socket raw; // the TCP socket under the TLS layer
         final DataInputStream in;
         final DataOutputStream out;
 
-        TransferSocket(Socket socket) throws IOException {
+        TransferSocket(Socket socket, Socket raw) throws IOException {
             this.socket = socket;
+            this.raw = raw;
             this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
             this.out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
         }
@@ -390,6 +412,16 @@ public class ClientConnection implements Closeable {
         @Override
         public void close() throws IOException {
             socket.close();
+        }
+
+        /**
+         * Stops the transfer from another thread. Closing the TLS socket would first send a TLS
+         * close_notify, which waits for the write lock a stalled upload holds, and so blocks the
+         * caller (the FX thread). Closing the TCP socket underneath fails the pending read or
+         * write at once instead.
+         */
+        void abort() throws IOException {
+            raw.close();
         }
     }
 
@@ -399,7 +431,7 @@ public class ClientConnection implements Closeable {
         try {
             s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MILLIS);
             SSLSocket secured = secure(s); // same pinned certificate as the CONTROL connection
-            TransferSocket t = new TransferSocket(secured);
+            TransferSocket t = new TransferSocket(secured, s);
             writeVersion(t.out);
             t.out.writeUTF(Protocol.HELLO_TRANSFER);
             t.out.writeUTF(username);
@@ -428,11 +460,26 @@ public class ClientConnection implements Closeable {
                                       Consumer<String> onStatus,
                                       Consumer<AppError> onFailed,
                                       Consumer<Path> onSaved) {
+        startParallelDownload(fileId, targetDirOrFile, onProgress, onStatus, onFailed, onSaved, new TransferHandle());
+    }
+
+    /**
+     * Like the other overload; {@code handle.cancel()} stops the download, deletes the partly
+     * written file and reports status {@code CANCELLED} instead of calling {@code onFailed}.
+     */
+    public void startParallelDownload(String fileId, Path targetDirOrFile,
+                                      BiConsumer<Long, Long> onProgress,
+                                      Consumer<String> onStatus,
+                                      Consumer<AppError> onFailed,
+                                      Consumer<Path> onSaved,
+                                      TransferHandle handle) {
 
         Thread t = new Thread(() -> {
             Platform.runLater(() -> onStatus.accept("CONNECTING"));
 
             try (TransferSocket ts = openTransfer()) {
+                handle.attach(ts::abort); // from now on, cancel() closes this socket (without blocking)
+                handle.throwIfCancelled();
                 DataInputStream din = ts.in;
                 DataOutputStream dout = ts.out;
 
@@ -477,6 +524,7 @@ public class ClientConnection implements Closeable {
                     long received = 0;
 
                     while (received < fileSize) {
+                        handle.throwIfCancelled();
                         int toRead = (int) Math.min(buffer.length, fileSize - received);
                         int read = din.read(buffer, 0, toRead);
                         if (read == -1) throw new EOFException("Disconnected during download");
@@ -502,6 +550,10 @@ public class ClientConnection implements Closeable {
                 });
 
             } catch (Exception ex) {
+                if (handle.isCancelled()) { // the socket closed under us because the user cancelled
+                    Platform.runLater(() -> onStatus.accept("CANCELLED"));
+                    return;
+                }
                 AppError err = AppError.from(ex);
                 Platform.runLater(() -> onFailed.accept(err)); // sets status FAILED + translated reason
             }

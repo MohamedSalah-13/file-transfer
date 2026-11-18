@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.*;
@@ -178,6 +179,79 @@ class ClientConnectionTest {
         long millis = (System.nanoTime() - start) / 1_000_000;
         assertTrue(millis < 1000, "LIST_THREAD arrived after " + millis + " ms while the upload was stalled");
         assertFalse(upload.isDone(), "upload still stalled");
+    }
+
+    @Test
+    @Timeout(30)
+    void aStalledUploadCanBeCancelled() throws Exception {
+        conn = login("carol", "carol");
+        Path big = dir.resolve("big.bin");
+        Files.write(big, new byte[64 * 1024 * 1024]);
+        TransferHandle handle = new TransferHandle();
+        CompletableFuture<Void> upload = CompletableFuture.runAsync(() -> {
+            try {
+                conn.sendFile("dave", big, (d, t) -> {}, handle);
+            } catch (Exception e) {
+                throw new CompletionException(e);
+            }
+        });
+        Peer transfer = server.next();
+        transfer.acceptTransferLogin();
+        transfer.in.readUTF(); // SEND_FILE, then the fake server stops reading: the upload stalls
+        Thread.sleep(300);
+        assertFalse(upload.isDone(), "upload is stalled");
+
+        long start = System.nanoTime();
+        handle.cancel(); // from the FX thread in the app: must not wait for the stalled write
+        long millis = (System.nanoTime() - start) / 1_000_000;
+        assertTrue(millis < 1000, "cancel() took " + millis + " ms");
+        ExecutionException e = assertThrows(ExecutionException.class, () -> upload.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(TransferHandle.TransferCancelledException.class, e.getCause(), "cancelled, not an error");
+        transfer.socket.setSoTimeout(5000);
+        assertThrows(IOException.class, () -> {
+            while (transfer.in.read(new byte[64 * 1024]) != -1) { } // the server side sees the socket close
+            throw new EOFException();
+        });
+    }
+
+    @Test
+    @Timeout(30)
+    void aDownloadCanBeCancelledAndLeavesNoPartialFile() throws Exception {
+        conn = login("carol", "carol");
+        Path downloads = Files.createDirectory(dir.resolve("downloads"));
+        BlockingQueue<String> statuses = new LinkedBlockingQueue<>();
+        TransferHandle handle = new TransferHandle();
+
+        conn.startParallelDownload("id-1", downloads, (d, t) -> {}, statuses::add,
+                err -> statuses.add("FAILED " + err), saved -> statuses.add("SAVED"), handle);
+
+        Peer transfer = server.next();
+        transfer.acceptTransferHello();
+        transfer.out.writeUTF(Protocol.FILE);
+        transfer.out.writeUTF("report.pdf");
+        transfer.out.writeLong(1000);
+        transfer.out.write(new byte[10]); // then the server goes quiet: the download waits
+        transfer.out.flush();
+        assertEquals("CONNECTING", statuses.poll(5, TimeUnit.SECONDS));
+        assertEquals("DOWNLOADING", statuses.poll(5, TimeUnit.SECONDS));
+
+        handle.cancel();
+        assertEquals("CANCELLED", statuses.poll(5, TimeUnit.SECONDS), "cancelled, not failed");
+        assertNull(statuses.poll(300, TimeUnit.MILLISECONDS), "nothing after CANCELLED");
+        try (var files = Files.list(downloads)) {
+            assertEquals(List.of(), files.toList(), "the partly written report.pdf is deleted");
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    void cancellingBeforeTheTransferStartsStopsItAtOnce() throws Exception {
+        conn = login("carol", "carol");
+        Path file = dir.resolve("notes.txt");
+        Files.writeString(file, "x");
+        TransferHandle handle = new TransferHandle();
+        handle.cancel();
+        assertThrows(TransferHandle.TransferCancelledException.class, () -> conn.sendFile("dave", file, (d, t) -> {}, handle));
     }
 
     @Test

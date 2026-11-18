@@ -184,3 +184,14 @@
     -fx-border-color: -color-danger-emphasis;
     -fx-text-fill: -color-danger-fg;
 }
+
+/* ✕ next to a running transfer */
+.cancel-transfer {
+    -fx-padding: 2 8;
+    -fx-text-fill: -color-danger-fg;
+    -fx-font-weight: 700;
+}
+
+.cancel-transfer:hover {
+    -fx-background-color: -color-danger-subtle;
+}

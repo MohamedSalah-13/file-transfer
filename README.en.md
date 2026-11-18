@@ -14,7 +14,7 @@ A JavaFX app for sending files and chatting between computers on a local network
 - **Instant notifications**: the server pushes new messages and files to the recipient as soon as they arrive.
 - **Windows notifications**: when the app isn't in front and a message or file arrives, Windows shows a notification with the sender's name (never the message text); clicking it opens that chat. The unread count shows in the window title and taskbar, like "(3)". Notifications can be turned off in Settings.
 - **Parallel transfers**: each upload or download opens its own connection, so it never blocks the chat, and several transfers can run at once.
-- **Transfers panel**: shows the status of every upload and download, and why it failed if it did. The panel can be hidden.
+- **Transfers panel**: shows the status of every upload and download, and why it failed if it did. The panel can be hidden. A ✕ next to a running transfer stops it: a cancelled upload is deleted on the server and nobody is notified, a cancelled download is deleted from your computer, and the chat and other transfers carry on.
 - Limits: **200 MB** per file and **2000 characters** per text message.
 
 ### Interface

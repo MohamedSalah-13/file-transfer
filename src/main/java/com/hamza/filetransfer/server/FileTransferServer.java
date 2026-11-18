@@ -364,7 +364,7 @@ public class FileTransferServer {
             }
         } catch (IOException e) {
             Files.deleteIfExists(bin); // don't leave half-written files behind
-            session.setStatus("FAILED");
+            session.setStatus("INTERRUPTED"); // the sender cancelled or the connection dropped
             throw e;
         }
 

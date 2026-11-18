@@ -371,7 +371,18 @@ public class ClientApp extends Application {
             }, r.statusProperty(), r.failureProperty(), I18n.bundleProperty());
         });
 
-        transfersTable.getColumns().addAll(tName, tProg, tStatus);
+        // ✕ stops a running upload or download (only that transfer; chat and the others go on).
+        TableColumn<SimpleTransferRow, SimpleTransferRow> tCancel = new TableColumn<>();
+        tCancel.setCellValueFactory(c -> new javafx.beans.property.ReadOnlyObjectWrapper<>(c.getValue()));
+        tCancel.setCellFactory(tc -> new CancelCell());
+        tCancel.setSortable(false);
+        tCancel.setReorderable(false);
+        tCancel.setResizable(false);
+        tCancel.setPrefWidth(44);
+        tCancel.setMinWidth(44);
+        tCancel.setMaxWidth(44);
+
+        transfersTable.getColumns().addAll(tName, tProg, tStatus, tCancel);
         transfersTable.setPlaceholder(label("no_transfers"));
 
         VBox right = new VBox(10, label("transfers"), transfersTable);
@@ -534,11 +545,13 @@ public class ClientApp extends Application {
         Thread t = new Thread(() -> {
             try {
                 // Server errors (e.g. unknown recipient, file too large) fail this row only.
-                c.sendFile(peer, file, row::setProgress);
+                c.sendFile(peer, file, row::setProgress, row.handle());
                 Platform.runLater(() -> {
                     row.setStatus("DONE");
                     refreshThreadIfActive(peer);
                 });
+            } catch (TransferHandle.TransferCancelledException ex) {
+                Platform.runLater(() -> row.setStatus("CANCELLED")); // the ✕ button, not an error
             } catch (Exception ex) {
                 Platform.runLater(() -> row.setFailed(AppError.from(ex)));
             }
@@ -631,7 +644,8 @@ public class ClientApp extends Application {
                         // refresh list cell rendering
                         if (chatListRef != null) chatListRef.refresh();
                     }
-                }
+                },
+                row.handle()
         );
     }
 
@@ -1048,6 +1062,33 @@ public class ClientApp extends Application {
 
     private static void applyOrientation(Parent root) {
         root.setNodeOrientation(I18n.isRightToLeft() ? NodeOrientation.RIGHT_TO_LEFT : NodeOrientation.LEFT_TO_RIGHT);
+    }
+
+    /** The ✕ button of a transfer row, shown only while that transfer can still be cancelled. */
+    private static final class CancelCell extends TableCell<SimpleTransferRow, SimpleTransferRow> {
+        private final Button button = new Button("✕");
+
+        CancelCell() {
+            button.getStyleClass().addAll("cancel-transfer", "flat");
+            Tooltip tip = new Tooltip();
+            tip.textProperty().bind(I18n.bind("cancel_transfer"));
+            button.setTooltip(tip);
+            button.accessibleTextProperty().bind(I18n.bind("cancel_transfer"));
+            setAlignment(Pos.CENTER);
+        }
+
+        @Override
+        protected void updateItem(SimpleTransferRow row, boolean empty) {
+            super.updateItem(row, empty);
+            button.visibleProperty().unbind();
+            if (empty || row == null) {
+                setGraphic(null);
+                return;
+            }
+            button.visibleProperty().bind(row.cancellableProperty());
+            button.setOnAction(e -> row.cancel());
+            setGraphic(button);
+        }
     }
 
     private static final class UserCell extends ListCell<UserItem> {

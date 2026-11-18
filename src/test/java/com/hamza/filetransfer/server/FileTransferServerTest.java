@@ -228,6 +228,47 @@ class FileTransferServerTest {
     }
 
     @Test
+    void anUploadCutOffHalfwayLeavesNothingBehind() throws Exception {
+        // What a cancelled upload looks like to the server: the transfer socket closes mid-file.
+        Wire ali = login("Ali", "secret1");
+        Wire bob = login("bob", "secret2");
+        Path inbox = storage.resolve("users/Ali/inbox");
+
+        Wire upload = transfer("bob", bob.token);
+        upload.out.writeUTF(Protocol.SEND_FILE);
+        upload.out.writeUTF("Ali");
+        upload.out.writeUTF("big.bin");
+        upload.out.writeLong(1_000_000);
+        upload.out.write(new byte[10_000]);
+        upload.out.flush();
+        assertTrue(waitUntil(() -> countFiles(inbox) == 1), "the server started writing the file");
+
+        upload.socket.close();
+        assertTrue(waitUntil(() -> countFiles(inbox) == 0), "the half-written file is deleted");
+        assertFalse(Files.exists(storage.resolve("users/Ali/threads")), "no message for the recipient");
+        assertFalse(Files.exists(storage.resolve("users/bob/threads")), "no message for the sender");
+        ali.socket.setSoTimeout(300);
+        assertThrows(java.net.SocketTimeoutException.class, ali::readUTF, "the recipient is not notified");
+    }
+
+    private static long countFiles(Path dir) {
+        if (!Files.isDirectory(dir)) return 0;
+        try (var files = Files.list(dir)) {
+            return files.count();
+        } catch (IOException e) {
+            return -1;
+        }
+    }
+
+    private static boolean waitUntil(java.util.function.BooleanSupplier condition) throws InterruptedException {
+        for (int i = 0; i < 100; i++) {
+            if (condition.getAsBoolean()) return true;
+            Thread.sleep(50);
+        }
+        return false;
+    }
+
+    @Test
     void uploadErrorsOnATransferSocketAreReportedThere() throws Exception {
         Wire bob = login("bob", "secret2");
 
