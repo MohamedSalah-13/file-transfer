@@ -163,3 +163,24 @@
 .connection-status {
     -fx-font-weight: 600;
 }
+
+/* Files dragged over the chat: a dashed frame that says what a drop does (red when it can't) */
+.drop-overlay {
+    -fx-background-color: -color-accent-subtle;
+    -fx-border-color: -color-accent-emphasis;
+    -fx-border-style: segments(10, 6);
+    -fx-border-width: 2;
+    -fx-border-radius: 14;
+    -fx-background-radius: 14;
+    -fx-text-fill: -color-accent-fg;
+    -fx-font-size: 16px;
+    -fx-font-weight: 700;
+    -fx-padding: 24;
+    -fx-opacity: 0.95;
+}
+
+.drop-overlay:blocked {
+    -fx-background-color: -color-danger-subtle;
+    -fx-border-color: -color-danger-emphasis;
+    -fx-text-fill: -color-danger-fg;
+}

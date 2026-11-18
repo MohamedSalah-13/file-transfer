@@ -20,14 +20,21 @@ import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
+import javafx.scene.input.DragEvent;
+import javafx.scene.input.Dragboard;
+import javafx.scene.input.TransferMode;
 import javafx.scene.layout.*;
+import javafx.scene.text.TextAlignment;
+import javafx.css.PseudoClass;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
 import com.hamza.filetransfer.shared.Discovery;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 
@@ -257,37 +264,8 @@ public class ClientApp extends Application {
         });
 
         btnSend.setOnAction(a -> {
-            if (conn == null) return;
-            if (activePeer == null) {
-                // لازم تختار شخص
-                return;
-            }
-            if (chosen.get() == null) return;
-
-            // capture now: the selection may change before the thread runs
-            String peer = activePeer;
-            Path file = chosen.get();
-
-            SimpleTransferRow row = new SimpleTransferRow("");
-            row.nameProperty().bind(I18n.bind("transfer_send", file.getFileName().toString(), peer));
-            row.setStatus("SENDING");
-            transfers.add(row);
-
-            ClientConnection c = conn; // the upload belongs to this session even if the user reconnects
-            Thread t = new Thread(() -> {
-                try {
-                    // Runs on its own TRANSFER socket; server errors (e.g. unknown recipient) fail this row.
-                    c.sendFile(peer, file, row::setProgress);
-                    Platform.runLater(() -> {
-                        row.setStatus("DONE");
-                        refreshThreadIfActive(peer);
-                    });
-                } catch (Exception ex) {
-                    Platform.runLater(() -> row.setFailed(AppError.from(ex)));
-                }
-            }, "send-task");
-            t.setDaemon(true);
-            t.start();
+            if (conn == null || activePeer == null || chosen.get() == null) return;
+            sendFile(activePeer, chosen.get());
         });
 
         FlowPane composer = new FlowPane(tfMessage, btnSendText, btnChoose, lblChosen, btnSend);
@@ -334,8 +312,11 @@ public class ClientApp extends Application {
         VBox.setVgrow(chatList, Priority.ALWAYS);
 
         center.getChildren().addAll(label("send"), composer);
+        // Files dragged from Explorer onto the chat are sent to the open chat's user.
+        StackPane chatDropTarget = new StackPane(center);
+        acceptDroppedFiles(chatDropTarget);
         // ===== Layout: drag the dividers to resize the side panels; the top bar toggles hide them =====
-        SidePanels panels = new SidePanels(left, center, right, PanelLayout.load(PanelLayout.defaultLocation()));
+        SidePanels panels = new SidePanels(left, chatDropTarget, right, PanelLayout.load(PanelLayout.defaultLocation()));
         tgUsers.selectedProperty().bindBidirectional(panels.usersShownProperty());
         tgTransfers.selectedProperty().bindBidirectional(panels.transfersShownProperty());
         stage.setOnHidden(e -> rememberLayout(panels.current()));
@@ -460,6 +441,87 @@ public class ClientApp extends Application {
         } catch (IOException | RuntimeException e) {
             System.err.println("Could not save the panel layout: " + e);
         }
+    }
+
+    /** Uploads one file to {@code peer} on its own TRANSFER socket, with a row in the transfers panel. */
+    private void sendFile(String peer, Path file) {
+        SimpleTransferRow row = new SimpleTransferRow("");
+        row.nameProperty().bind(I18n.bind("transfer_send", file.getFileName().toString(), peer));
+        row.setStatus("SENDING");
+        transfers.add(row);
+
+        ClientConnection c = conn; // the upload belongs to this session even if the user reconnects
+        Thread t = new Thread(() -> {
+            try {
+                // Server errors (e.g. unknown recipient, file too large) fail this row only.
+                c.sendFile(peer, file, row::setProgress);
+                Platform.runLater(() -> {
+                    row.setStatus("DONE");
+                    refreshThreadIfActive(peer);
+                });
+            } catch (Exception ex) {
+                Platform.runLater(() -> row.setFailed(AppError.from(ex)));
+            }
+        }, "send-task");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private static final PseudoClass DROP_BLOCKED = PseudoClass.getPseudoClass("blocked");
+
+    /**
+     * Lets files dragged from Explorer be dropped on {@code target} (the chat): while they hover, an
+     * overlay says what a drop would do, and dropping sends each file to the open chat's user.
+     * Folders are skipped. File drags are handled in event filters, so the message field never
+     * pastes their paths as text.
+     */
+    private void acceptDroppedFiles(StackPane target) {
+        Label overlay = new Label();
+        overlay.getStyleClass().add("drop-overlay");
+        overlay.setWrapText(true);
+        overlay.setTextAlignment(TextAlignment.CENTER);
+        overlay.setAlignment(Pos.CENTER);
+        overlay.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
+        overlay.setMouseTransparent(true);
+        overlay.setVisible(false);
+        target.getChildren().add(overlay);
+
+        target.addEventFilter(DragEvent.DRAG_OVER, e -> {
+            if (!e.getDragboard().hasFiles()) return;
+            List<Path> files = regularFiles(e.getDragboard());
+            boolean canSend = conn != null && activePeer != null && !files.isEmpty();
+            if (canSend) e.acceptTransferModes(TransferMode.COPY);
+            overlay.setText(dropHint(files, files.size() < e.getDragboard().getFiles().size()));
+            overlay.pseudoClassStateChanged(DROP_BLOCKED, !canSend);
+            overlay.setVisible(true);
+            e.consume();
+        });
+        target.addEventFilter(DragEvent.DRAG_DROPPED, e -> {
+            if (!e.getDragboard().hasFiles()) return;
+            overlay.setVisible(false);
+            String peer = activePeer; // capture now: the selection may change while files upload
+            List<Path> files = regularFiles(e.getDragboard());
+            boolean send = conn != null && peer != null && !files.isEmpty();
+            if (send) files.forEach(f -> sendFile(peer, f));
+            e.setDropCompleted(send);
+            e.consume();
+        });
+        target.addEventHandler(DragEvent.DRAG_EXITED, e -> overlay.setVisible(false));
+    }
+
+    private static List<Path> regularFiles(Dragboard board) {
+        return board.getFiles().stream().map(File::toPath).filter(Files::isRegularFile).toList();
+    }
+
+    /** What dropping these files would do now, or why it can't. */
+    private String dropHint(List<Path> files, boolean foldersSkipped) {
+        if (conn == null) return I18n.get("drop_connect_first");
+        if (activePeer == null) return I18n.get("drop_pick_user");
+        if (files.isEmpty()) return I18n.get("drop_only_files");
+        String hint = files.size() == 1
+                ? I18n.get("drop_send_one", files.getFirst().getFileName().toString(), activePeer)
+                : I18n.get("drop_send_many", Integer.toString(files.size()), activePeer);
+        return foldersSkipped ? hint + System.lineSeparator() + I18n.get("drop_folders_skipped") : hint;
     }
 
     private void chooseAndDownload(Stage stage, String messageId, String displayName) {
