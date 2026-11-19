@@ -1,0 +1,96 @@
+name: Packages (Linux, macOS)
+
+# jpackage only builds for the system it runs on, so the Linux and macOS packages are made here.
+# The Windows installer is still built and published from the developer's computer by
+# packaging/release.ps1; publishing that release starts this workflow, which adds its files to the
+# same release. Installed copies keep finding releases by their Windows installer (client.Updates);
+# on Linux and macOS the updater offers the release's page, where these files are.
+on:
+  release:
+    types: [published]
+  # A change to the packaging is tried out before it is merged; the packages are kept as artifacts.
+  pull_request:
+    paths:
+      - packaging/**
+      - pom.xml
+      - .github/workflows/packages.yml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and add the packages to (empty builds this branch, artifacts only)
+        required: false
+        default: ''
+
+concurrency:
+  group: packages-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  package:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: write # adds the packages to the release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (.deb)
+            os: ubuntu-latest
+          - name: macOS Apple Silicon (.dmg)
+            os: macos-latest
+          - name: macOS Intel (.dmg)
+            os: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # fakeroot for the .deb; a virtual screen and GTK for ClientConnectionTest, which starts JavaFX.
+      - name: Install what jpackage and the tests need
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot xvfb libgtk-3-0
+
+      - name: Build the packages (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pwsh ./packaging/package.ps1
+
+      - name: Build the packages (macOS)
+        if: runner.os == 'macOS'
+        shell: pwsh
+        run: ./packaging/package.ps1
+
+      - name: Keep the packages with this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.os }}
+          path: target/installer/FileTransfer*
+          if-no-files-found: error
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-${{ matrix.os }}
+          path: target/surefire-reports
+          if-no-files-found: ignore
+
+      - name: Add the packages to the release
+        if: env.RELEASE_TAG != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" target/installer/FileTransfer* --clobber --repo "$GITHUB_REPOSITORY"

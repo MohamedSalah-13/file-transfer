@@ -1,74 +1,204 @@
 <#
 .SYNOPSIS
-    Builds a Windows installer with two Start menu shortcuts: "File Transfer" (the client)
-    and "File Transfer Server". Users don't need Java or Maven: the installer has its own runtime.
+    Builds the installer of this system: a Windows .exe, a Linux .deb or macOS .dmg files. Users
+    don't need Java or Maven: every installer has its own runtime.
 
 .DESCRIPTION
-    1. javafx:jlink makes a runtime image (target/app) with the app's module, JavaFX and AtlantaFX.
-       It keeps bin\keytool.exe: the server creates its TLS certificate with it on first start.
+    1. mvnw test javafx:jlink makes a runtime image (target/app) with the app's module, JavaFX and
+       AtlantaFX. It keeps bin/keytool: the server creates its TLS certificate with it on first start.
        (jpackage's own jlink step would strip it.)
-    2. jpackage turns that image into an installer in target/installer.
+    2. jpackage turns that image into the installer in target/installer:
+         Windows: "File Transfer-<version>.exe", one installer with two launchers and two Start menu
+                  shortcuts, "File Transfer" (the client) and "File Transfer Server".
+         Linux:   FileTransfer-<version>-linux-<arch>.deb, the same two launchers with a menu entry each.
+         macOS:   FileTransfer-<version>-macos-<arch>.dmg and FileTransferServer-<version>-macos-<arch>.dmg,
+                  one app each: a macOS app has one icon and one entry in Launchpad.
 
-    Needs a JDK 17+ with jpackage (JAVA_HOME or PATH). The exe and msi types also need the
-    WiX Toolset (3.x works with JDK 17+, 4+ needs JDK 24+). app-image needs nothing extra: it
-    makes a folder you can zip and run without installing.
+    jpackage only builds for the system it runs on, so the Linux and macOS packages are made by
+    .github/workflows/packages.yml on GitHub's Linux and macOS machines. The Windows installer is still
+    published from the developer's computer by packaging\release.ps1, which runs this script.
+
+    Every launcher gets -Dfiletransfer.version=<the real version> (client.Updates): macOS refuses a
+    package version that starts with 0, so 0.x.y is packaged there as 1.x.y, and the updater must still
+    compare the real one. The server's launcher also gets -Dfiletransfer.packaged=true, which keeps its
+    data in ~/.file-transfer/server instead of the install folder (ServerConfig.workDir).
+
+    Needs a JDK 17+ with jpackage (JAVA_HOME or PATH). Windows' exe and msi also need the WiX Toolset
+    (3.x works with JDK 17+, 4+ needs JDK 24+); Linux's deb needs fakeroot. app-image needs nothing
+    extra: it makes a folder you can zip and run without installing. Runs in Windows PowerShell 5.1
+    and in PowerShell 7 (pwsh on Linux and macOS). The tests need a desktop session (ClientConnectionTest
+    starts JavaFX); on a Linux machine without a screen run the script under xvfb-run, or use -SkipTests.
 
 .EXAMPLE
-    .\packaging\package.ps1                  # target\installer\File Transfer-<version>.exe
+    .\packaging\package.ps1                  # this system's installer (exe, deb or dmg)
     .\packaging\package.ps1 -Type app-image  # target\installer\File Transfer\ (no WiX needed)
+    .\packaging\package.ps1 -SkipTests
 #>
 param(
-    [ValidateSet('exe', 'msi', 'app-image')]
-    [string]$Type = 'exe'
+    # Empty picks this system's usual installer: exe, deb or dmg.
+    [ValidateSet('', 'exe', 'msi', 'deb', 'rpm', 'dmg', 'pkg', 'app-image')]
+    [string]$Type = '',
+    [switch]$SkipTests
 )
 # No global ErrorActionPreference=Stop: in Windows PowerShell 5.1 it turns any stderr line from
 # mvnw or jpackage (JDK warnings) into a failure. Each step checks its exit code instead.
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root -ErrorAction Stop
 
+# $IsMacOS does not exist in Windows PowerShell 5.1, where it reads as empty.
+$onWindows = $env:OS -eq 'Windows_NT'
+$onMac = (-not $onWindows) -and $IsMacOS
+if ($onWindows) { $platform = 'windows' } elseif ($onMac) { $platform = 'macos' } else { $platform = 'linux' }
+$allowed = @{ windows = @('exe', 'msi'); linux = @('deb', 'rpm'); macos = @('dmg', 'pkg') }[$platform]
+if (-not $Type) { $Type = $allowed[0] }
+if ($Type -ne 'app-image' -and $allowed -notcontains $Type) {
+    throw "-Type $Type cannot be built on $platform. Here: $($allowed -join ', ') or app-image."
+}
+$iconExt = @{ windows = 'ico'; linux = 'png'; macos = 'icns' }[$platform]
+$exe = if ($onWindows) { '.exe' } else { '' }
+
 $version = ([xml](Get-Content -Raw -Encoding UTF8 pom.xml)).project.version
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "pom.xml version '$version' must be MAJOR.MINOR.PATCH for an installer" }
+# macOS refuses a version that starts with 0, so 0.x.y is packaged there as 1.x.y. The program reads
+# its real version from -Dfiletransfer.version (client.Updates), which is what the updater compares.
+$packageVersion = $version
+if ($onMac -and $version -match '^0\.(.+)$') { $packageVersion = '1.' + $Matches[1] }
 
-$jpackage = if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME 'bin\jpackage.exe'))) {
-    Join-Path $env:JAVA_HOME 'bin\jpackage.exe'
+$jpackage = if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME "bin/jpackage$exe"))) {
+    Join-Path $env:JAVA_HOME "bin/jpackage$exe"
 } else {
     (Get-Command jpackage -ErrorAction SilentlyContinue).Source
 }
 if (-not $jpackage) { throw 'jpackage not found: install a JDK 17+ and set JAVA_HOME' }
 
-Write-Host "Building the runtime image (version $version)..."
-& .\mvnw.cmd -q clean compile javafx:jlink
-if ($LASTEXITCODE -ne 0) { throw 'Maven build failed' }
-if (-not (Test-Path target\app\bin\keytool.exe)) { throw 'The runtime image has no keytool.exe: the server could not create its certificate' }
-
-$dest = 'target\installer'
-New-Item -ItemType Directory -Force $dest | Out-Null
-
-$jpArgs = @(
-    '--type', $Type,
-    '--name', 'File Transfer',
-    '--app-version', $version,
-    '--vendor', 'File Transfer',
-    '--description', 'LAN file transfer and chat',
-    '--runtime-image', 'target\app',
-    '--module', 'com.hamza.filetransfer/com.hamza.filetransfer.client.ClientLauncher',
-    '--icon', 'packaging\client.ico',
-    '--add-launcher', 'File Transfer Server=packaging\server-launcher.properties',
-    '--dest', $dest
-)
-if ($Type -ne 'app-image') {
-    $jpArgs += @(
-        '--win-menu', '--win-menu-group', 'File Transfer',
-        '--win-shortcut',
-        '--win-dir-chooser',
-        # No admin rights needed: installs into the user's AppData.
-        '--win-per-user-install',
-        # Never change this: it lets a newer installer replace an older version in place.
-        '--win-upgrade-uuid', 'cb2471e0-5c11-47ed-8163-f2ec81a5127c'
-    )
+function Invoke-Tool {
+    param([string]$Exe, [string[]]$Arguments)
+    & $Exe @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "$Exe failed with exit code $LASTEXITCODE" }
 }
 
-Write-Host "Running jpackage ($Type)..."
-& $jpackage @jpArgs
-if ($LASTEXITCODE -ne 0) { throw 'jpackage failed' }
+# --- 1. runtime image
+# An installer from an earlier run of this script may still be read-only (see the end), which would stop "clean".
+$previous = Join-Path $root 'target/installer'
+if (Test-Path $previous) { Get-ChildItem -LiteralPath $previous -File | ForEach-Object { $_.IsReadOnly = $false } }
+$goals = if ($SkipTests) { @('-q', 'clean', 'compile', 'javafx:jlink') } else { @('-q', 'clean', 'test', 'javafx:jlink') }
+Write-Host "Building the runtime image (version $version$(if (-not $SkipTests) { ', with the tests' }))..."
+if ($onWindows) {
+    Invoke-Tool (Join-Path $root 'mvnw.cmd') $goals
+} else {
+    # Through sh: the wrapper may have lost its executable bit in a checkout or a copy.
+    Invoke-Tool 'sh' (@((Join-Path $root 'mvnw')) + $goals)
+}
+$runtime = Join-Path $root 'target/app'
+if (-not (Test-Path (Join-Path $runtime "bin/keytool$exe"))) {
+    throw 'The runtime image has no keytool: the server could not create its certificate'
+}
+
+$dest = Join-Path $root 'target/installer'
+New-Item -ItemType Directory -Force $dest | Out-Null
+$module = 'com.hamza.filetransfer'
+$clientMain = "$module/com.hamza.filetransfer.client.ClientLauncher"
+$serverMain = "$module/com.hamza.filetransfer.server.ServerLauncher"
+$versionOption = "-Dfiletransfer.version=$version"
+$serverOptions = "-Dfiletransfer.packaged=true $versionOption"
+$common = @(
+    '--app-version', $packageVersion,
+    '--vendor', 'File Transfer',
+    '--description', 'LAN file transfer and chat',
+    '--runtime-image', $runtime
+)
+
+if ($onMac) {
+    # --- 2. macOS: one app per program, each with its own icon, then a .dmg of each
+    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+    $apps = @(
+        @{ Name = 'File Transfer'; MenuName = 'File Transfer'; Id = 'com.hamza.filetransfer.client'
+           Main = $clientMain; Icon = 'client'; Options = @($versionOption); File = 'FileTransfer' },
+        # The name in the menu bar must stay under 16 characters.
+        @{ Name = 'File Transfer Server'; MenuName = 'Transfer Server'; Id = 'com.hamza.filetransfer.server'
+           Main = $serverMain; Icon = 'server'; Options = @('-Dfiletransfer.packaged=true', $versionOption)
+           File = 'FileTransferServer' }
+    )
+    $imageDir = Join-Path $root 'target/app-images'
+    foreach ($app in $apps) {
+        $icon = Join-Path $PSScriptRoot "$($app.Icon).icns"
+        Write-Host "Running jpackage (app-image, $($app.Name))..."
+        $imageArgs = @('--type', 'app-image', '--name', $app.Name, '--module', $app.Main, '--icon', $icon,
+            '--mac-package-identifier', $app.Id, '--mac-package-name', $app.MenuName, '--dest', $imageDir) + $common
+        foreach ($option in $app.Options) { $imageArgs += @('--java-options', $option) }
+        Invoke-Tool $jpackage $imageArgs
+        $image = Join-Path $imageDir "$($app.Name).app"
+        if (-not (Test-Path (Join-Path $image 'Contents/runtime/Contents/Home/bin/keytool'))) {
+            throw "$image has no keytool: the server could not create its certificate"
+        }
+        if ($Type -eq 'app-image') {
+            Write-Host "Application: $image"
+            continue
+        }
+        Write-Host "Running jpackage ($Type, $($app.Name))..."
+        Invoke-Tool $jpackage @('--type', $Type, '--app-image', $image, '--name', $app.Name,
+            '--app-version', $packageVersion, '--vendor', 'File Transfer', '--icon', $icon, '--dest', $dest)
+        # jpackage names it "<name>-<package version>"; the published name carries the real version.
+        Get-ChildItem -LiteralPath $dest -File -Filter "$($app.Name)-*.$Type" |
+            Rename-Item -NewName "$($app.File)-$version-macos-$arch.$Type" -Force
+    }
+} else {
+    # --- 2. Windows and Linux: one installer, the client as the main launcher plus the server's
+    # The server's launcher. java-options replaces the main launcher's, so it repeats the version.
+    $serverLauncher = Join-Path $root 'target/server-launcher.properties'
+    $lines = @(
+        "# Second launcher in the installer: ""File Transfer Server"" (made by packaging/package.ps1).",
+        "module=$serverMain",
+        "java-options=$serverOptions",
+        # The client icon with a server badge (made by IconMaker.java). Relative to the project root:
+        # a Windows path's backslashes would be escapes in a .properties file.
+        "icon=packaging/server.$iconExt"
+    )
+    if ($onWindows) { $lines += @('win-menu=true', 'win-shortcut=true') } else { $lines += 'linux-shortcut=true' }
+    # ASCII: no byte-order mark, which Windows PowerShell 5.1's UTF8 would write and jpackage would read as text.
+    Set-Content -LiteralPath $serverLauncher -Value $lines -Encoding Ascii
+
+    $jpArgs = @(
+        '--type', $Type,
+        '--name', 'File Transfer',
+        '--module', $clientMain,
+        '--java-options', $versionOption,
+        '--icon', (Join-Path $PSScriptRoot "client.$iconExt"),
+        '--add-launcher', "File Transfer Server=$serverLauncher",
+        '--dest', $dest
+    ) + $common
+    if ($Type -ne 'app-image' -and $onWindows) {
+        $jpArgs += @(
+            '--win-menu', '--win-menu-group', 'File Transfer',
+            '--win-shortcut',
+            '--win-dir-chooser',
+            # No admin rights needed: installs into the user's AppData.
+            '--win-per-user-install',
+            # Never change this: it lets a newer installer replace an older version in place.
+            '--win-upgrade-uuid', 'cb2471e0-5c11-47ed-8163-f2ec81a5127c'
+        )
+    } elseif ($Type -ne 'app-image') {
+        $jpArgs += @(
+            '--linux-package-name', 'file-transfer',
+            '--linux-shortcut',
+            '--linux-menu-group', 'Network',
+            '--linux-app-category', 'net'
+        )
+    }
+    Write-Host "Running jpackage ($Type)..."
+    Invoke-Tool $jpackage $jpArgs
+
+    # The Windows installer keeps jpackage's name: packaging\release.ps1 names it when it is published.
+    if (-not $onWindows -and $Type -ne 'app-image') {
+        $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+        $package = Get-ChildItem -LiteralPath $dest -File -Filter "*.$Type" | Select-Object -First 1
+        if ($Type -eq 'deb') {
+            $listing = & dpkg-deb -c $package.FullName
+            if (-not ($listing -match '/bin/keytool$')) { throw "$($package.Name) has no keytool: the server could not create its certificate" }
+        }
+        Rename-Item -LiteralPath $package.FullName -NewName "FileTransfer-$version-linux-$arch.$Type" -Force
+    }
+}
+# jpackage leaves its installer read-only, and the next "mvnw clean" could not delete it.
+Get-ChildItem -LiteralPath $dest -File | ForEach-Object { $_.IsReadOnly = $false }
 Get-ChildItem $dest | Format-Table Name, LastWriteTime, Length

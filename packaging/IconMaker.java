@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -15,7 +16,9 @@ import java.nio.file.Path;
  * The icon: a chat bubble with an up and a down arrow (send and receive files) on a blue-to-teal
  * tile. The server's icon adds a small server badge in the corner.
  * <ul>
- *   <li>{@code packaging/client.ico}, {@code packaging/server.ico}: the installer's launchers;</li>
+ *   <li>{@code packaging/client.ico}, {@code packaging/server.ico}: the Windows installer's launchers;</li>
+ *   <li>{@code packaging/client.png}, {@code packaging/server.png}: the Linux package's menu entries (512 px);</li>
+ *   <li>{@code packaging/client.icns}, {@code packaging/server.icns}: the macOS apps;</li>
  *   <li>{@code src/main/resources/icons/(client|server)-N.png}: the windows' title bar and taskbar.</li>
  * </ul>
  */
@@ -23,6 +26,9 @@ public class IconMaker {
 
     static final int[] ICO_SIZES = {16, 20, 24, 32, 40, 48, 64, 128, 256};
     static final int[] WINDOW_SIZES = {16, 24, 32, 48, 64, 128, 256};
+    /** The .icns entries that hold a PNG, with the size each one is drawn at. */
+    static final String[] ICNS_TYPES = {"ic11", "ic12", "ic07", "ic08", "ic09", "ic10"};
+    static final int[] ICNS_SIZES = {32, 64, 128, 256, 512, 1024};
 
     static final Color TILE_TOP = new Color(0x4F46E5);    // indigo
     static final Color TILE_BOTTOM = new Color(0x0891B2); // teal
@@ -38,6 +44,8 @@ public class IconMaker {
         for (boolean server : new boolean[]{false, true}) {
             String name = server ? "server" : "client";
             writeIco(root.resolve("packaging/" + name + ".ico"), server);
+            Files.write(root.resolve("packaging/" + name + ".png"), png(draw(512, server)));
+            Files.write(root.resolve("packaging/" + name + ".icns"), icns(server));
             for (int size : WINDOW_SIZES) {
                 ImageIO.write(draw(size, server), "png", icons.resolve(name + "-" + size + ".png").toFile());
             }
@@ -151,6 +159,22 @@ public class IconMaker {
         }
         for (byte[] b : images) out.put(b);
         Files.write(file, out.array());
+    }
+
+    /** Apple's icon file: a big-endian header, then each size as a PNG under its four-letter type. */
+    static byte[] icns(boolean server) throws IOException {
+        ByteArrayOutputStream entries = new ByteArrayOutputStream();
+        for (int i = 0; i < ICNS_TYPES.length; i++) {
+            byte[] image = png(draw(ICNS_SIZES[i], server));
+            entries.write(ICNS_TYPES[i].getBytes(StandardCharsets.US_ASCII));
+            entries.write(ByteBuffer.allocate(4).putInt(8 + image.length).array());
+            entries.write(image);
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write("icns".getBytes(StandardCharsets.US_ASCII));
+        out.write(ByteBuffer.allocate(4).putInt(8 + entries.size()).array());
+        entries.writeTo(out);
+        return out.toByteArray();
     }
 
     static byte[] png(BufferedImage img) throws IOException {

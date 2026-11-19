@@ -314,7 +314,10 @@ public class ClientApp extends Application {
         // double-click download (only if downloadable)
         chatList.setOnKeyPressed(e -> { // Delete on a selected message: same as right-click > Delete...
             ChatMessage m = chatList.getSelectionModel().getSelectedItem();
-            if (e.getCode() == KeyCode.DELETE && m != null) {
+            // A Mac keyboard's "delete" key is Backspace.
+            boolean deleteKey = e.getCode() == KeyCode.DELETE
+                    || (e.getCode() == KeyCode.BACK_SPACE && System.getProperty("os.name", "").startsWith("Mac"));
+            if (deleteKey && m != null) {
                 askToDelete(m);
                 e.consume();
             }
@@ -1294,7 +1297,7 @@ public class ClientApp extends Application {
     }
 
     /**
-     * A Windows notification for something new from {@code from}, unless the user is looking at
+     * A desktop notification for something new from {@code from}, unless the user is looking at
      * the app or turned notifications off. A burst from one sender gives one notification.
      */
     private void notifyNewMessage(String from, String text) {

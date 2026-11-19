@@ -5,7 +5,7 @@ import java.nio.file.Path;
 import java.util.Map;
 
 /**
- * Whether new messages show a Windows notification (on by default), kept in
+ * Whether new messages show a desktop notification (on by default), kept in
  * {@code ~/.file-transfer/client.properties} with the client's other settings.
  */
 public record NotifySetting(boolean enabled) {

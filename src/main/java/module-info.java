@@ -10,7 +10,7 @@ module com.hamza.filetransfer {
     requires org.kordamp.ikonli.javafx;
     requires org.kordamp.ikonli.feather;
 
-    // Windows notifications for new messages (AWT TrayIcon, see client.DesktopNotifier)
+    // Desktop notifications for new messages (AWT TrayIcon, see client.DesktopNotifier)
     requires java.desktop;
 
     exports com.hamza.filetransfer.shared;
