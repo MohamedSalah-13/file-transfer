@@ -15,13 +15,31 @@ public final class Updates {
     }
 
     /**
+     * The program's real version, set by the installer's launchers ({@code packaging/package.ps1}). It wins
+     * over the launcher's own {@code jpackage.app-version}, which on macOS reads 1.x.y for a 0.x.y release:
+     * macOS refuses a package version that starts with 0.
+     */
+    public static final String VERSION_PROPERTY = "filetransfer.version";
+
+    /**
      * The installed copy's version comes from the launcher, so a copy run from the IDE has none and is
      * never offered a release.
+     * <p>
+     * Releases are found by their Windows installer on every system. Where the library cannot run an
+     * installer (Linux, macOS) it offers the release's page instead, which also holds the .deb and .dmg
+     * files ({@code .github/workflows/packages.yml}).
      */
     public static AppUpdater updater() {
-        return AppUpdater.builder("File Transfer")
-                .source(ReleaseSource.github("MohamedSalah-13/file-transfer").asset("*-setup.exe"))
-                .build();
+        return updater(System.getProperty(VERSION_PROPERTY));
+    }
+
+    static AppUpdater updater(String packagedVersion) {
+        AppUpdater.Builder builder = AppUpdater.builder("File Transfer")
+                .source(ReleaseSource.github("MohamedSalah-13/file-transfer").asset("*-setup.exe"));
+        if (packagedVersion != null && !packagedVersion.isBlank()) {
+            builder.currentVersion(packagedVersion.strip());
+        }
+        return builder.build();
     }
 
     /**

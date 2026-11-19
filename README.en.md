@@ -29,7 +29,7 @@ A JavaFX app for sending files and chatting between computers on a local network
 - **Buttons on file bubbles**: "Download" for a file you don't have yet, "Open" and "Show in folder" for one on your computer (downloaded, or sent from here), remembered across restarts. A file that can run programs (an `.exe`, a `.bat`...) asks first, with Cancel as the default.
 - **Drag and drop**: drag one or more files from Explorer onto the open chat to send them right away. While dragging, a frame says what will be sent and to whom, or why it can't be (not connected, no user selected). Folders are skipped.
 - **Instant notifications**: the server pushes new messages and files to the recipient as soon as they arrive.
-- **Windows notifications**: when the app isn't in front and a message or file arrives, Windows shows a notification with the sender's name (never the message text); clicking it opens that chat. The unread count shows in the window title and taskbar, like "(3)". Notifications can be turned off in Settings.
+- **Desktop notifications**: when the app isn't in front and a message or file arrives, the system shows a notification with the sender's name (never the message text); clicking it opens that chat. The unread count shows in the window title and taskbar, like "(3)". Notifications can be turned off in Settings.
 - **Parallel transfers**: each upload or download opens its own connection, so it never blocks the chat, and several transfers can run at once.
 - **Transfers panel**: shows the status of every upload and download, and why it failed if it did. The panel can be hidden. A ✕ next to a running transfer stops it: a cancelled upload is deleted on the server and nobody is notified, a cancelled download is deleted from your computer, and the chat and other transfers carry on.
 - Limits: **200 MB** per file and **2000 characters** per text message.
@@ -85,16 +85,31 @@ Command-line options win over the file, and the file wins over the defaults (`50
 
 Full details (client fields, accounts, network and firewall settings) are in [docs/RUNNING.md](docs/RUNNING.md) (Arabic).
 
-### Windows installer
+### Installers (Windows, Linux, macOS)
 
-To give the app to people who don't have Java:
+To give the app to people who don't have Java. One script builds the installer of the system it runs on, after running the tests:
 
 ```powershell
-.\packaging\package.ps1                  # target\installer\File Transfer-<version>.exe
+.\packaging\package.ps1                  # Windows: target\installer\File Transfer-<version>.exe
 .\packaging\package.ps1 -Type app-image  # a folder to zip and run without installing
+.\packaging\package.ps1 -SkipTests       # without the tests
 ```
 
-The installer has its own Java runtime and needs no admin rights. It adds two Start menu shortcuts: **File Transfer** (the client) and **File Transfer Server**. The installed server keeps its data and `server.properties` in `%USERPROFILE%\.file-transfer\server`, so uninstalling or upgrading keeps the accounts, files and certificate. The app icon (a chat bubble with send and receive arrows; the server's adds a server badge) is drawn by `packaging/IconMaker.java`: run `java packaging/IconMaker.java` after changing it. Building the installer needs JDK 17+ (for `jpackage`) and, for the `.exe`, the [WiX Toolset](https://wixtoolset.org/) 3.x.
+| System | File | Holds |
+|---|---|---|
+| Windows | `File Transfer-<version>.exe` | both programs, each with a Start menu and desktop shortcut |
+| Linux | `FileTransfer-<version>-linux-<arch>.deb` | both programs, each with an applications menu entry |
+| macOS | `FileTransfer-<version>-macos-<arch>.dmg` and `FileTransferServer-<version>-macos-<arch>.dmg` | one app each: a macOS app has a single icon |
+
+Every installer has its own Java runtime. The Windows one needs no admin rights and adds two shortcuts: **File Transfer** (the client) and **File Transfer Server**. The installed server keeps its data and `server.properties` in `~/.file-transfer/server` (on Windows `%USERPROFILE%\.file-transfer\server`), so uninstalling or upgrading keeps the accounts, files and certificate.
+
+`jpackage` only builds for its own system, so the Linux and macOS (Apple Silicon and Intel) packages are built on GitHub's machines by [`.github/workflows/packages.yml`](.github/workflows/packages.yml): when a release is published with `packagingelease.ps1` (from Windows, as before), the workflow adds the `.deb` and `.dmg` files to that release; a pull request that changes the packaging keeps them as run artifacts without publishing anything. It can also be started by hand from the Actions tab for an existing release.
+
+- **Linux:** `sudo apt install ./FileTransfer-<version>-linux-x64.deb`. The app is installed in `/opt/file-transfer`.
+- **macOS:** open the `.dmg` and drag the app to Applications. The apps aren't signed by Apple, so open them the first time with right-click > Open (or System Settings > Privacy & Security > Open Anyway).
+- macOS refuses a version that starts with 0, so `0.x.y` is packaged there as `1.x.y`; the real version reaches the program through `-Dfiletransfer.version`, which is what updates are compared with.
+
+The app icon (a chat bubble with send and receive arrows; the server's adds a server badge) is drawn by `packaging/IconMaker.java`, which writes the `.ico`, `.png` and `.icns` of each program: run `java packaging/IconMaker.java` after changing it. Building needs JDK 17+ (for `jpackage`), the [WiX Toolset](https://wixtoolset.org/) 3.x for the `.exe`, and `fakeroot` for the `.deb`.
 
 ## Tests
 
@@ -161,6 +176,8 @@ server-storage/
 
 - The server and the clients must use the same protocol version. If they don't, the server refuses the login with a clear message asking to install the same version on both. Since 2.0.0 the connection is encrypted, so it does not work with 1.x servers or clients.
 - Deleting `server-storage/tls` creates a new certificate. Every client then blocks the connection and shows the old and new fingerprints. Its "Trust the new certificate" button only works after the user confirms they compared the new fingerprint with the server window.
+
+- **Outside Windows:** the updater finds and announces a new release but doesn't install it: it opens the release page, where you download the `.deb` or `.dmg`. Message notifications need a system tray: macOS, KDE and Xfce have one, GNOME (Ubuntu's default) doesn't, so no notification shows there (the unread count in the window title still works).
 
 ## Documentation
 

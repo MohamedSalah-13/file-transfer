@@ -14,6 +14,13 @@ class FileLauncherTest {
     }
 
     @Test
+    void macAndLinuxProgramsAreRecognizedToo() {
+        for (String name : new String[]{"start.command", "Setup.pkg", "App.dmg", "install.sh", "tool.AppImage", "app.desktop", "x.deb"}) {
+            assertTrue(FileLauncher.canRunPrograms(name), name);
+        }
+    }
+
+    @Test
     void windowsTricksWithTrailingDotsAndSpacesAreCaught() {
         assertTrue(FileLauncher.canRunPrograms("setup.exe."));
         assertTrue(FileLauncher.canRunPrograms("setup.exe  "));

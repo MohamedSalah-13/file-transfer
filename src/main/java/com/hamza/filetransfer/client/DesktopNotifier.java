@@ -12,7 +12,7 @@ import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
 /**
- * Windows notifications ("toasts") for new messages. JavaFX has none, so this uses an AWT
+ * Desktop notifications (Windows toasts) for new messages. JavaFX has none, so this uses an AWT
  * {@link TrayIcon}: it is added on the first notification and stays in the notification area
  * while the app runs; clicking it, or the notification, calls {@code onClick} with the sender.
  * All AWT work runs on one background thread, never on the FX thread. {@link #close()} removes the
@@ -35,7 +35,10 @@ final class DesktopNotifier implements ClientApp.Notifier {
         this.onClick = onClick;
     }
 
-    /** False on systems without a notification area (or headless): then nothing is shown. */
+    /**
+     * False on systems without a notification area (or headless): then nothing is shown. That includes
+     * GNOME on Linux, which has no tray for AWT; KDE, Xfce and macOS have one.
+     */
     static boolean supported() {
         return !GraphicsEnvironment.isHeadless() && SystemTray.isSupported();
     }
