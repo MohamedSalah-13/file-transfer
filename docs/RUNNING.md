@@ -57,3 +57,41 @@
 - تأكد أن المنفذ `5000` (TCP) مفتوح في الجدار الناري.
 - زرار "ابحث عن الخوادم" يحتاج أن يسمح الجدار الناري على جهاز السيرفر بمنفذ `5001` (UDP). لو لم يظهر السيرفر في القائمة، اكتب عنوانه بنفسك؛ نافذة السيرفر تعرض هل البحث يعمل.
 
+## التجربة على جهاز واحد مع Windows Sandbox
+عشان تجرّب البرنامج المثبّت بين "جهازين" من غير جهاز تاني: السيرفر وعميل على جهازك، وعميل تاني جوه Windows Sandbox (موجود في Windows 10/11 Pro، وبيتفعّل من "Turn Windows features on or off").
+
+1. اعمل المثبّت بـ `.\packaging\package.ps1` (بيطلع في `target\installer`).
+2. على جهازك: شغّل "File Transfer Server" وبعده "File Transfer"، واتصل على `127.0.0.1` بورت `5000`.
+3. افتح [`docs/sandbox/file-transfer.wsb`](sandbox/file-transfer.wsb) بدبل كليك. بيفتح الساندبوكس وفيه مجلد `installer` على سطح المكتب (للقراءة فقط). الملف فيه مسار المشروع `F:\git\file-transfer`؛ لو المشروع في مكان تاني عدّل `HostFolder` (الساندبوكس ما بيقبلش مسار نسبي).
+4. ثبّت البرنامج جوه الساندبوكس وشغّل "File Transfer" باسم مستخدم تاني.
+5. عنوان جهازك من جوه الساندبوكس هو الـ **Default Gateway** بتاعه. اعرفه من PowerShell جوه الساندبوكس:
+   ```powershell
+   ipconfig | findstr /i "IPv4 Gateway"
+   ```
+   (كان `172.25.96.1`، وهو عنوان `vEthernet (Default Switch)` على جهازك). "ابحث عن الخوادم" غالبًا مش هيلاقيه، فاكتب العنوان بنفسك.
+6. قبل ما توافق على السيرفر، قارن البصمة بالبصمة في نافذة السيرفر على جهازك.
+
+### لو ظهر "Connect timed out"
+جرّب من PowerShell جوه الساندبوكس: `Test-NetConnection <Gateway> -Port 5000`. لو `TcpTestSucceeded : False` يبقى الجدار الناري على جهازك هو اللي مانع (فشل الـ Ping لوحده عادي، ويندوز بيقفله على شبكات Public). الشبكات الافتراضية بتتعرّف Public، ولو علامة Public ما اتعلمتش لما ويندوز سأل عن السيرفر، بيعمل قاعدة Block بتغلب أي قاعدة Allow.
+
+من **PowerShell كمسؤول** (Run as Administrator؛ الـ Terminal العادي بيدّي `Access is denied`، واستعمل علامات تنصيص مفردة):
+
+```powershell
+New-NetFirewallRule -DisplayName 'File Transfer (test)' -Direction Inbound -Protocol TCP -LocalPort 5000 -Action Allow -Profile Any
+New-NetFirewallRule -DisplayName 'File Transfer discovery (test)' -Direction Inbound -Protocol UDP -LocalPort 5001 -Action Allow -Profile Any
+```
+
+ولو لسه مقفول، عطّل قاعدة الـ Block بتاعة البرنامج:
+
+```powershell
+Get-NetFirewallRule -Direction Inbound -Action Block | Where-Object { $_.DisplayName -like '*File Transfer*' } | Disable-NetFirewallRule
+```
+
+لما تخلص التجارب، امسح القاعدتين:
+
+```powershell
+Remove-NetFirewallRule -DisplayName 'File Transfer (test)','File Transfer discovery (test)'
+```
+
+الساندبوكس بيتمسح بالكامل لما يتقفل (التثبيت والبصمة اللي وثقت فيها)، أما الحسابات والرسائل فبتفضل على السيرفر في جهازك. وبما إن فيه إنترنت، تقدر كمان تجرّب التحديث التلقائي بتثبيت نسخة أقدم جواه.
+
