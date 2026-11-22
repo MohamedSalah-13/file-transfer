@@ -95,6 +95,8 @@ To give the app to people who don't have Java. One script builds the installer o
 .\packaging\package.ps1 -SkipTests       # without the tests
 ```
 
+The script needs a clone of [desktop-updater](https://github.com/MohamedSalah-13/desktop-updater) beside this project (or `DESKTOP_UPDATER_HOME`), as `release.ps1` does: the steps the programs share are its `tools/Packaging.psm1`.
+
 | System | File | Holds |
 |---|---|---|
 | Windows | `File Transfer-<version>.exe` | both programs, each with a Start menu and desktop shortcut |

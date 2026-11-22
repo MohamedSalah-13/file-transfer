@@ -95,6 +95,8 @@ storage=D:/ft-data
 .\packaging\package.ps1 -SkipTests       # من غير الاختبارات
 ```
 
+السكربت محتاج نسخة من [desktop-updater](https://github.com/MohamedSalah-13/desktop-updater) جنب المشروع (أو في `DESKTOP_UPDATER_HOME`)، زي `release.ps1`: الخطوات المشتركة بين البرامج في `tools/Packaging.psm1` هناك.
+
 | النظام | الملف | فيه |
 |---|---|---|
 | Windows | `File Transfer-<version>.exe` | البرنامجين، باختصار لكل واحد في قائمة Start وعلى سطح المكتب |
