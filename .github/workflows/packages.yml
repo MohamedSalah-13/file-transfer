@@ -28,69 +28,20 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
-
 jobs:
-  package:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+  packages:
+    name: Packages
+    # The jobs are desktop-updater's shared ones: package.ps1 on Linux and on both kinds of Mac.
+    # Pinned to a commit, so nothing changes here without a pull request in this repository.
+    uses: MohamedSalah-13/desktop-updater/.github/workflows/package-unix.yml@12790947000d45c2d097790c3af2607a56a9550a
     permissions:
       contents: write # adds the packages to the release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux (.deb)
-            os: ubuntu-latest
-          - name: macOS Apple Silicon (.dmg)
-            os: macos-latest
-          - name: macOS Intel (.dmg)
-            os: macos-15-intel
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '25'
-          cache: maven
-
+    with:
+      script: packaging/package.ps1
+      files: target/installer/FileTransfer*
+      tag: ${{ github.event.release.tag_name || inputs.tag }}
       # fakeroot for the .deb; a virtual screen and GTK for ClientConnectionTest, which starts JavaFX.
-      - name: Install what jpackage and the tests need
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y fakeroot xvfb libgtk-3-0
-
-      - name: Build the packages (Linux)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a pwsh ./packaging/package.ps1
-
-      - name: Build the packages (macOS)
-        if: runner.os == 'macOS'
-        shell: pwsh
-        run: ./packaging/package.ps1
-
-      - name: Keep the packages with this run
-        uses: actions/upload-artifact@v4
-        with:
-          name: packages-${{ matrix.os }}
-          path: target/installer/FileTransfer*
-          if-no-files-found: error
-
-      - name: Upload test reports
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: surefire-reports-${{ matrix.os }}
-          path: target/surefire-reports
-          if-no-files-found: ignore
-
-      - name: Add the packages to the release
-        if: env.RELEASE_TAG != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE_TAG" target/installer/FileTransfer* --clobber --repo "$GITHUB_REPOSITORY"
+      apt-packages: fakeroot xvfb libgtk-3-0
+      virtual-screen: true
+      test-reports: target/surefire-reports
+      artifact-name: packages
